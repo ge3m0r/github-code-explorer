@@ -1,0 +1,5 @@
+{
+  "name": "GitHub Code Explorer",
+  "description": "A beautiful visualization tool for exploring GitHub project code and file structures.",
+  "requestFramePermissions": []
+}
