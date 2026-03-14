@@ -34,15 +34,22 @@ export interface FileNode {
   children?: FileNode[];
 }
 
+/** 获取请求 GitHub API 时的 headers（若配置了 GITHUB_TOKEN 则带认证） */
+function githubHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { Accept: 'application/vnd.github.v3+json' };
+  const token = (process.env as Record<string, string | undefined>).GITHUB_TOKEN?.trim();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return headers;
+}
+
 export async function fetchRepoTree(owner: string, repo: string): Promise<FileNode[]> {
-  // First get default branch
-  const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`);
+  const headers = githubHeaders();
+  const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers });
   if (!repoRes.ok) throw new Error('Repository not found');
   const repoData = await repoRes.json();
   const defaultBranch = repoData.default_branch;
 
-  // Get tree
-  const treeRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`);
+  const treeRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`, { headers });
   if (!treeRes.ok) throw new Error('Failed to fetch repository tree');
   const treeData = await treeRes.json();
 
@@ -88,7 +95,7 @@ function buildTree(items: any[]): FileNode[] {
 }
 
 export async function fetchFileContent(owner: string, repo: string, path: string): Promise<string> {
-  const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`);
+  const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`, { headers: githubHeaders() });
   if (!res.ok) throw new Error('Failed to fetch file content');
   const data = await res.json();
   if (data.encoding === 'base64') {

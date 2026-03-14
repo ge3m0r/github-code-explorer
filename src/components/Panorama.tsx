@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
-import { SubFunctionAnalysisResult } from '../lib/ai';
+import { SubFunctionAnalysisResult, SubFunction } from '../lib/ai';
 
 interface PanoramaProps {
   data: SubFunctionAnalysisResult | null;
@@ -12,6 +12,88 @@ const CARD_HEIGHT = 80;
 const VERTICAL_SPACING = 60;
 const HORIZONTAL_SPACING = 40;
 
+interface LayoutNode {
+  id: string;
+  x: number;
+  y: number;
+  name: string;
+  file: string;
+  description: string;
+  isEntry: boolean;
+  drillDown?: number;
+  stopReason?: string;
+}
+
+function buildTreeLayout(
+  data: SubFunctionAnalysisResult,
+  entryFile: string
+): { nodes: LayoutNode[]; edges: Array<{ id: string; x1: number; y1: number; x2: number; y2: number }> } {
+  const nodes: LayoutNode[] = [];
+  const edges: Array<{ id: string; x1: number; y1: number; x2: number; y2: number }> = [];
+  let currentX = 20;
+  let currentY = 20;
+
+  nodes.push({
+    id: 'entry',
+    x: currentX,
+    y: currentY,
+    name: data.entryFunctionName === 'Analyzing...' ? '正在分析入口函数...' : data.entryFunctionName,
+    file: entryFile,
+    description: data.entryFunctionName === 'Analyzing...' ? '请稍候，AI 正在提取子函数' : '主入口函数',
+    isEntry: true,
+  });
+
+  const entryCenterX = currentX + CARD_WIDTH / 2;
+  const entryBottomY = currentY + CARD_HEIGHT;
+  currentX += CARD_WIDTH + HORIZONTAL_SPACING;
+
+  const cursor = { x: currentX, y: 20 };
+
+  function addSubNodes(
+    subs: SubFunction[],
+    parentCenterX: number,
+    parentBottomY: number,
+    prefix: string
+  ): void {
+    subs.forEach((sub, index) => {
+      const id = `${prefix}-${index}`;
+      nodes.push({
+        id,
+        x: cursor.x,
+        y: cursor.y,
+        name: sub.name,
+        file: sub.file,
+        description: sub.description,
+        isEntry: false,
+        drillDown: sub.drillDown,
+        stopReason: sub.stopReason,
+      });
+      edges.push({
+        id: `edge-${id}`,
+        x1: parentCenterX,
+        y1: parentBottomY,
+        x2: cursor.x,
+        y2: cursor.y + CARD_HEIGHT / 2,
+      });
+      const nodeCenterX = cursor.x + CARD_WIDTH / 2;
+      const nodeBottomY = cursor.y + CARD_HEIGHT;
+      cursor.y += CARD_HEIGHT + VERTICAL_SPACING;
+      if (sub.children && sub.children.length > 0) {
+        const saveX = cursor.x;
+        cursor.x += CARD_WIDTH + HORIZONTAL_SPACING;
+        addSubNodes(sub.children, nodeCenterX, nodeBottomY, id);
+        cursor.x = saveX;
+      }
+    });
+  }
+
+  addSubNodes(data.subFunctions, entryCenterX, entryBottomY, 'sub');
+  const maxY = nodes.length ? Math.max(...nodes.map(n => n.y + CARD_HEIGHT)) : 0;
+  const layoutHeight = Math.max(1000, maxY + 40);
+  const layoutWidth = Math.max(2000, (cursor.x + CARD_WIDTH) + 40);
+  return { nodes, edges, layoutWidth, layoutHeight };
+}
+
 export default function Panorama({ data, entryFile }: PanoramaProps) {
   if (!data) {
     return (
@@ -21,49 +103,16 @@ export default function Panorama({ data, entryFile }: PanoramaProps) {
     );
   }
 
-  // Simple layout: Entry function at top left, sub-functions in a column below and to the right
-  const nodes = [];
-  const edges = [];
-
-  // Entry node
-  nodes.push({
-    id: 'entry',
-    x: 20,
-    y: 20,
-    name: data.entryFunctionName === 'Analyzing...' ? '正在分析入口函数...' : data.entryFunctionName,
-    file: entryFile,
-    description: data.entryFunctionName === 'Analyzing...' ? '请稍候，AI 正在提取子函数' : '主入口函数',
-    isEntry: true,
-  });
-
-  // Sub-function nodes
-  data.subFunctions.forEach((sub, index) => {
-    const x = 20 + CARD_WIDTH / 2 + HORIZONTAL_SPACING;
-    const y = 20 + CARD_HEIGHT + VERTICAL_SPACING + index * (CARD_HEIGHT + VERTICAL_SPACING);
-    
-    nodes.push({
-      id: `sub-${index}`,
-      x,
-      y,
-      name: sub.name,
-      file: sub.file,
-      description: sub.description,
-      isEntry: false,
-      drillDown: sub.drillDown,
-    });
-
-    // Edge from entry to sub
-    edges.push({
-      id: `edge-${index}`,
-      x1: 20 + CARD_WIDTH / 2,
-      y1: 20 + CARD_HEIGHT,
-      x2: x,
-      y2: y + CARD_HEIGHT / 2,
-    });
-  });
+  const { nodes, edges, layoutWidth, layoutHeight } = useMemo(() => buildTreeLayout(data, entryFile), [data, entryFile]);
 
   return (
-    <div className="h-full w-full bg-gray-50/50 overflow-hidden relative">
+    <div className="h-full w-full bg-gray-50/50 overflow-hidden relative flex flex-col">
+      <div className="shrink-0 px-2 py-1.5 flex items-center gap-4 text-[10px] text-gray-500 border-b border-gray-100 bg-white/80">
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-blue-500" /> 需要下钻（已尝试，有子节点或已因未找到/系统/深度停止）</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-yellow-400" /> 不确定是否下钻（仍会尝试下钻，故可能有子节点）或 未找到定义</span>
+        <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-gray-300" /> 无需下钻</span>
+      </div>
+      <div className="flex-1 min-h-0 overflow-hidden">
       <TransformWrapper
         initialScale={1}
         minScale={0.1}
@@ -72,7 +121,7 @@ export default function Panorama({ data, entryFile }: PanoramaProps) {
         wheel={{ step: 0.1 }}
       >
         <TransformComponent wrapperStyle={{ width: '100%', height: '100%' }}>
-          <div className="relative" style={{ width: 2000, height: Math.max(1000, nodes.length * 150) }}>
+          <div className="relative" style={{ width: layoutWidth, height: layoutHeight }}>
             {/* Edges */}
             <svg className="absolute top-0 left-0 w-full h-full pointer-events-none">
               {edges.map(edge => {
@@ -105,9 +154,37 @@ export default function Panorama({ data, entryFile }: PanoramaProps) {
                 }}
               >
                 <div className={`px-3 py-1.5 border-b text-xs font-mono truncate flex justify-between items-center ${node.isEntry ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 'bg-gray-50 text-gray-600 border-gray-100'}`}>
-                  <span className="truncate">{node.file}</span>
-                  {!node.isEntry && node.drillDown !== undefined && (
-                    <span className={`shrink-0 ml-2 w-2 h-2 rounded-full ${node.drillDown === 1 ? 'bg-blue-500' : node.drillDown === -1 ? 'bg-gray-300' : 'bg-yellow-400'}`} title={node.drillDown === 1 ? '需要下钻分析' : node.drillDown === -1 ? '无需下钻' : '不确定是否需要下钻'} />
+                  <span className="truncate" title={node.file}>{node.file}</span>
+                  {!node.isEntry && (
+                    <>
+                      {node.drillDown !== undefined && (
+                        <span
+                          className={`shrink-0 ml-2 w-2 h-2 rounded-full ${
+                            node.stopReason === 'not_found'
+                              ? 'bg-yellow-400'
+                              : node.drillDown === 1
+                              ? 'bg-blue-500'
+                              : node.drillDown === -1
+                              ? 'bg-gray-300'
+                              : 'bg-yellow-400'
+                          }`}
+                          title={
+                            node.stopReason === 'not_found'
+                              ? '未找到定义（下钻时无法定位该函数）'
+                              : node.drillDown === 1
+                              ? '需要下钻：已尝试下钻，有子节点或已因未找到/系统函数/深度限制停止'
+                              : node.drillDown === -1
+                              ? '无需下钻'
+                              : '不确定是否下钻：仍会尝试下钻，故可能有子节点'
+                          }
+                        />
+                      )}
+                      {node.stopReason && (
+                        <span className="shrink-0 ml-1 text-[10px] text-gray-400" title={`停止原因: ${node.stopReason === 'max_depth' ? '达到最大深度' : node.stopReason === 'not_found' ? '未找到定义' : node.stopReason === 'system_function' ? '系统/库函数' : node.stopReason === 'non_core' ? '非核心函数' : node.stopReason}`}>
+                          [{node.stopReason === 'max_depth' ? '深度' : node.stopReason === 'not_found' ? '未找到' : node.stopReason === 'system_function' ? '系统' : node.stopReason === 'non_core' ? '非核心' : ''}]
+                        </span>
+                      )}
+                    </>
                   )}
                 </div>
                 <div className="px-3 py-2 flex-1 flex flex-col justify-center">
@@ -129,6 +206,7 @@ export default function Panorama({ data, entryFile }: PanoramaProps) {
           </div>
         </TransformComponent>
       </TransformWrapper>
+      </div>
     </div>
   );
 }

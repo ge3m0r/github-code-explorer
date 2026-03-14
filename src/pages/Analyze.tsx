@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { parseGithubUrl, fetchRepoTree, fetchFileContent, FileNode, extractCodeFiles } from '../lib/github';
-import { analyzeProject, verifyEntryFile, analyzeSubFunctions, AiAnalysisResult, SubFunctionAnalysisResult } from '../lib/ai';
+import { analyzeProject, verifyEntryFile, analyzeSubFunctions, pickBestEntryFile, suggestFilesForFunction, analyzeFunctionSnippet, AiAnalysisResult, SubFunctionAnalysisResult, SubFunction } from '../lib/ai';
+import { locateFunctionInProject, looksLikeSystemOrLibrary } from '../lib/functionLocator';
 import { truncateJson } from '../lib/utils';
 import FileTree from '../components/FileTree';
 import CodeViewer from '../components/CodeViewer';
@@ -91,6 +92,105 @@ export default function Analyze() {
     }]);
   };
 
+  const maxDrillDepth = Math.max(0, parseInt(process.env.AI_DRILL_DOWN_MAX_DEPTH || '3', 10) || 3);
+
+  /** 对单个子函数进行下钻：定位 -> 提取片段 -> AI 分析子函数 -> 递归处理 drillDown 0/1 的子孙。depth 从入口算起：1=入口的第一层子函数，2=再下一层 */
+  const drillDownOne = async (
+    sub: SubFunction,
+    parentFilePath: string,
+    depth: number,
+    owner: string,
+    repo: string,
+    files: string[],
+    projectSummary: string
+  ): Promise<SubFunction> => {
+    if (depth >= maxDrillDepth) {
+      addLog('下钻停止', `[${sub.name}] 已达最大下钻层数 ${maxDrillDepth}（从入口算起），停止下钻`);
+      return { ...sub, stopReason: 'max_depth' };
+    }
+    const fetchContent = (path: string) => fetchFileContent(owner, repo, path);
+    let suggestedFiles: string[] = [];
+    try {
+      const { result } = await suggestFilesForFunction(projectSummary, parentFilePath, sub.name, files);
+      suggestedFiles = result.possibleFiles || [];
+    } catch (e: any) {
+      addLog('下钻定位', `[${sub.name}] AI 推测文件失败，将使用项目搜索`);
+    }
+    const loc = await locateFunctionInProject(
+      sub.name,
+      parentFilePath,
+      suggestedFiles,
+      files,
+      fetchContent
+    );
+    if (!loc.found || !loc.resolvedFile) {
+      addLog('下钻停止', `[${sub.name}] 未找到函数定义，停止下钻`);
+      return { ...sub, stopReason: 'not_found' };
+    }
+    if (looksLikeSystemOrLibrary(sub.name, loc.resolvedFile)) {
+      addLog('下钻停止', `[${sub.name}] 判定为系统/库函数，停止下钻`);
+      return { ...sub, file: loc.resolvedFile, stopReason: 'system_function' };
+    }
+    addLog('下钻定位', `[${sub.name}] 已定位到 ${loc.resolvedFile}，开始分析子函数`);
+    let childResult: SubFunctionAnalysisResult;
+    try {
+      const { result } = await analyzeFunctionSnippet(
+        projectSummary,
+        sub.name,
+        loc.snippet,
+        loc.resolvedFile,
+        files
+      );
+      childResult = result;
+    } catch (e: any) {
+      addLog('下钻失败', `[${sub.name}] 分析片段失败：${e.message}`);
+      return { ...sub, file: loc.resolvedFile, stopReason: 'not_found' };
+    }
+    const children: SubFunction[] = [];
+    for (const child of childResult.subFunctions) {
+      if (child.drillDown !== 0 && child.drillDown !== 1) continue;
+      const processed = await drillDownOne(
+        child,
+        loc.resolvedFile,
+        depth + 1,
+        owner,
+        repo,
+        files,
+        projectSummary
+      );
+      children.push(processed);
+    }
+    return {
+      ...sub,
+      file: loc.resolvedFile,
+      children: children.length ? children : undefined,
+    };
+  };
+
+  /** 对第一层子函数中 drillDown 为 0 或 1 的项进行下钻，每完成一个立即更新全景图，避免长时间无反馈 */
+  const runDrillDown = async (
+    subResult: SubFunctionAnalysisResult,
+    entryFilePath: string,
+    owner: string,
+    repo: string,
+    files: string[],
+    projectSummary: string
+  ) => {
+    const subs = subResult.subFunctions;
+    for (let i = 0; i < subs.length; i++) {
+      const sub = subs[i];
+      if (sub.drillDown !== 0 && sub.drillDown !== 1) continue;
+      addLog('下钻分析', `开始下钻分析子函数 ${i + 1}/${subs.length}: ${sub.name}`);
+      const processed = await drillDownOne(sub, entryFilePath, 1, owner, repo, files, projectSummary);
+      setSubFunctionResult((prev) => {
+        if (!prev || prev.entryFunctionName !== subResult.entryFunctionName) return prev;
+        const next = prev.subFunctions.map((s, j) => (j === i ? processed : s));
+        return { ...prev, subFunctions: next };
+      });
+    }
+    addLog('下钻完成', `已对 ${subs.filter(s => s.drillDown === 0 || s.drillDown === 1).length} 个关键子函数完成下钻`);
+  };
+
   useEffect(() => {
     if (logsEndRef.current && !isLogModalOpen) {
       logsEndRef.current.scrollIntoView({ behavior: 'smooth' });
@@ -161,10 +261,12 @@ export default function Analyze() {
       if (result.entryFiles && result.entryFiles.length > 0) {
         addLog('入口研判', `AI 提供了 ${result.entryFiles.length} 个可能的入口文件，开始逐个研判...`);
         let foundEntry = false;
+        const candidateContents: Array<{ filePath: string; content: string }> = [];
         for (const filePath of result.entryFiles) {
           addLog('读取文件', `正在获取可能的入口文件内容：${filePath}`);
           try {
             const fileContent = await fetchFileContent(owner, repo, filePath);
+            candidateContents.push({ filePath, content: fileContent });
             addLog('研判文件', `开始调用 AI 研判文件：${filePath}`);
             const { result: verificationResult, details: verificationDetails } = await verifyEntryFile(
               `https://github.com/${owner}/${repo}`,
@@ -198,9 +300,17 @@ export default function Analyze() {
                 );
                 setSubFunctionResult(subResult);
                 addLog('分析子函数完成', `成功识别 ${subResult.subFunctions.length} 个关键子函数。`, subDetails);
+                const toDrill = subResult.subFunctions.filter(s => s.drillDown === 0 || s.drillDown === 1);
+                if (toDrill.length > 0 && maxDrillDepth > 0) {
+                  addLog('下钻分析', `将对 ${toDrill.length} 个关键子函数进行下钻（最大深度 ${maxDrillDepth}）...`);
+                  runDrillDown(subResult, filePath, owner, repo, files, result.projectSummary).catch((err: any) => {
+                    addLog('下钻异常', `下钻过程出错：${err.message}`);
+                  }).finally(() => setLoadingSubFunctions(false));
+                } else {
+                  setLoadingSubFunctions(false);
+                }
               } catch (err: any) {
                 addLog('分析子函数失败', `分析子函数时发生错误：${err.message}`);
-              } finally {
                 setLoadingSubFunctions(false);
               }
               
@@ -212,7 +322,52 @@ export default function Analyze() {
             addLog('研判出错', `处理文件 ${filePath} 时发生错误：${err.message}`);
           }
         }
-        if (!foundEntry) {
+        if (!foundEntry && candidateContents.length > 0) {
+          addLog('兜底研判', '所有候选均未单独确认，正在由 AI 对比所有候选文件并选出最可能的入口...');
+          try {
+            const { result: pickResult, details: pickDetails } = await pickBestEntryFile(
+              `https://github.com/${owner}/${repo}`,
+              result.projectSummary,
+              result.mainLanguage,
+              candidateContents,
+              files
+            );
+            const bestPath = pickResult.bestEntryFile;
+            const bestContent = candidateContents.find(c => c.filePath === bestPath)?.content ?? candidateContents[0].content;
+            addLog('兜底结果', `AI 选出入口文件：${bestPath}。理由：${pickResult.reason}`, pickDetails);
+            setAiResult(prev => prev ? { ...prev, verifiedEntryFile: bestPath, verifiedEntryReason: `[兜底] ${pickResult.reason}` } : null);
+            setSubFunctionResult({
+              entryFunctionName: 'Analyzing...',
+              subFunctions: []
+            });
+            setLoadingSubFunctions(true);
+            addLog('分析子函数', `开始分析兜底入口文件 ${bestPath} 的关键子函数...`);
+            try {
+              const { result: subResult, details: subDetails } = await analyzeSubFunctions(
+                result.projectSummary,
+                bestPath,
+                bestContent,
+                files
+              );
+              setSubFunctionResult(subResult);
+              addLog('分析子函数完成', `成功识别 ${subResult.subFunctions.length} 个关键子函数。`, subDetails);
+              const toDrill = subResult.subFunctions.filter(s => s.drillDown === 0 || s.drillDown === 1);
+              if (toDrill.length > 0 && maxDrillDepth > 0) {
+                addLog('下钻分析', `将对 ${toDrill.length} 个关键子函数进行下钻（最大深度 ${maxDrillDepth}）...`);
+                runDrillDown(subResult, bestPath, owner, repo, files, result.projectSummary).catch((err: any) => {
+                  addLog('下钻异常', `下钻过程出错：${err.message}`);
+                }).finally(() => setLoadingSubFunctions(false));
+              } else {
+                setLoadingSubFunctions(false);
+              }
+            } catch (err: any) {
+              addLog('分析子函数失败', `分析子函数时发生错误：${err.message}`);
+              setLoadingSubFunctions(false);
+            }
+          } catch (err: any) {
+            addLog('兜底研判失败', `对比选出入口时发生错误：${err.message}`);
+          }
+        } else if (!foundEntry) {
           addLog('研判结束', '所有可能的入口文件均已研判，未能确认最终入口。');
         }
       }

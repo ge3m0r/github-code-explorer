@@ -237,6 +237,10 @@ export interface SubFunction {
   description: string;
   file: string;
   drillDown: number;
+  /** 下钻得到的子函数（仅当 drillDown 为 0 或 1 且未因停止条件终止时有值） */
+  children?: SubFunction[];
+  /** 未继续下钻的原因：not_found / system_function / max_depth / non_core */
+  stopReason?: string;
 }
 
 export interface SubFunctionAnalysisResult {
@@ -355,5 +359,252 @@ ${contentToSend}
       request: requestPayload,
       response: parsedResult
     }
+  };
+}
+
+/** 兜底：当逐个研判均未确认入口时，让 AI 对比所有候选文件，选出最可能的一个 */
+export interface PickBestEntryResult {
+  bestEntryFile: string;
+  reason: string;
+}
+
+export async function pickBestEntryFile(
+  repoUrl: string,
+  projectSummary: string,
+  mainLanguage: string,
+  candidates: Array<{ filePath: string; content: string }>,
+  allFiles: string[]
+): Promise<{ result: PickBestEntryResult; details: AiCallDetails }> {
+  const candidateBlocks = candidates.map(({ filePath, content }) => {
+    const lines = content.split('\n');
+    let contentToSend = content;
+    if (lines.length > 4000) {
+      const first2000 = lines.slice(0, 2000).join('\n');
+      const last2000 = lines.slice(-2000).join('\n');
+      contentToSend = `${first2000}\n\n... [中间省略 ${lines.length - 4000} 行] ...\n\n${last2000}`;
+    }
+    return `## 候选文件路径: ${filePath}\n\`\`\`\n${contentToSend}\n\`\`\``;
+  }).join('\n\n');
+
+  const prompt = `请从以下多个候选文件中，综合对比后选出最可能是项目入口的一个文件，并给出理由。
+
+项目信息：
+- GitHub 链接: ${repoUrl}
+- 项目简介: ${projectSummary}
+- 编程语言: ${mainLanguage}
+- 项目包含的文件列表（部分）:
+${allFiles.slice(0, 1000).join('\n')}
+
+以下为候选入口文件及其内容：
+${candidateBlocks}
+
+请以 JSON 格式返回，且仅包含以下两个字段：
+- bestEntryFile: 你选中的文件路径（必须是上面「候选文件路径」中出现过的路径之一，原样填写）
+- reason: 选择理由（简短说明为何该文件最像入口）
+`;
+
+  let text: string;
+  let requestPayload: unknown;
+
+  if (isOpenAI) {
+    const out = await openAIChatCompletion(prompt);
+    text = out.text;
+    requestPayload = out.request;
+  } else {
+    const request = {
+      model: 'gemini-3-flash-preview',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            bestEntryFile: { type: Type.STRING, description: '选中的入口文件路径' },
+            reason: { type: Type.STRING, description: '选择理由' }
+          },
+          required: ['bestEntryFile', 'reason']
+        }
+      }
+    };
+    const response = await ai.models.generateContent(request);
+    text = response.text || '{}';
+    requestPayload = request;
+  }
+
+  let parsedResult: Record<string, unknown> = {};
+  try {
+    parsedResult = JSON.parse(text) as Record<string, unknown>;
+  } catch (e) {
+    console.error('Failed to parse pickBestEntryFile response', e);
+  }
+
+  const chosenPath = (parsedResult.bestEntryFile as string) || candidates[0]?.filePath || '';
+  const result: PickBestEntryResult = {
+    bestEntryFile: chosenPath,
+    reason: (parsedResult.reason as string) || '对比后选出的最可能入口'
+  };
+
+  return {
+    result,
+    details: { request: requestPayload, response: parsedResult }
+  };
+}
+
+/** 根据项目文件列表与函数名，让 AI 推测函数可能所在的文件路径列表（用于定位阶段 2） */
+export async function suggestFilesForFunction(
+  projectSummary: string,
+  callerFilePath: string,
+  functionName: string,
+  allFiles: string[]
+): Promise<{ result: { possibleFiles: string[] }; details: AiCallDetails }> {
+  const prompt = `根据项目文件列表和函数名，推测该函数最可能定义在哪些文件中。
+
+项目简介: ${projectSummary}
+调用该函数的文件路径: ${callerFilePath}
+待查找的函数名: ${functionName}
+
+项目文件列表（部分）:
+${allFiles.slice(0, 800).join('\n')}
+
+请以 JSON 格式返回，仅包含一个字段 possibleFiles: 字符串数组，列出最可能的文件路径（从上面文件列表中选，原样填写路径），最多 5 个，按可能性从高到低排序。若无法判断可返回空数组。`;
+
+  let text: string;
+  let requestPayload: unknown;
+
+  if (isOpenAI) {
+    const out = await openAIChatCompletion(prompt);
+    text = out.text;
+    requestPayload = out.request;
+  } else {
+    const request = {
+      model: 'gemini-3-flash-preview',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            possibleFiles: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: '可能的文件路径列表'
+            }
+          },
+          required: ['possibleFiles']
+        }
+      }
+    };
+    const response = await ai.models.generateContent(request);
+    text = response.text || '{}';
+    requestPayload = request;
+  }
+
+  let parsedResult: Record<string, unknown> = {};
+  try {
+    parsedResult = JSON.parse(text) as Record<string, unknown>;
+  } catch (e) {
+    console.error('Failed to parse suggestFilesForFunction response', e);
+  }
+
+  const possibleFiles = Array.isArray(parsedResult.possibleFiles)
+    ? (parsedResult.possibleFiles as string[]).filter((p): p is string => typeof p === 'string')
+    : [];
+
+  return {
+    result: { possibleFiles },
+    details: { request: requestPayload, response: parsedResult }
+  };
+}
+
+/** 根据函数代码片段分析其关键子函数（用于下钻）。入参为片段而非整文件。 */
+export async function analyzeFunctionSnippet(
+  projectSummary: string,
+  functionName: string,
+  snippet: string,
+  resolvedFilePath: string,
+  allFiles: string[]
+): Promise<{ result: SubFunctionAnalysisResult; details: AiCallDetails }> {
+  const prompt = `请分析以下函数代码片段，识别该函数调用的关键子函数（数量不超过20个）。
+
+项目简介: ${projectSummary}
+当前函数名: ${functionName}
+该函数所在文件路径: ${resolvedFilePath}
+项目包含的文件列表（部分）:
+${allFiles.slice(0, 500).join('\n')}
+
+函数代码片段：
+\`\`\`
+${snippet.slice(0, 12000)}
+\`\`\`
+
+请识别该函数内部调用的关键子函数，以 JSON 格式返回：
+- entryFunctionName: 当前函数名（即 ${functionName}）
+- subFunctions: 数组，每项包含 name, description, file（推测定义所在文件）, drillDown（-1 不需要下钻，0 不确定，1 需要下钻）`;
+
+  let text: string;
+  let requestPayload: unknown;
+
+  if (isOpenAI) {
+    const out = await openAIChatCompletion(prompt);
+    text = out.text;
+    requestPayload = out.request;
+  } else {
+    const request = {
+      model: 'gemini-3-flash-preview',
+      contents: prompt,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            entryFunctionName: { type: Type.STRING },
+            subFunctions: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  file: { type: Type.STRING },
+                  drillDown: { type: Type.INTEGER }
+                },
+                required: ['name', 'description', 'file', 'drillDown']
+              }
+            }
+          },
+          required: ['entryFunctionName', 'subFunctions']
+        }
+      }
+    };
+    const response = await ai.models.generateContent(request);
+    text = response.text || '{}';
+    requestPayload = request;
+  }
+
+  let parsedResult: Record<string, unknown> = {};
+  try {
+    parsedResult = JSON.parse(text) as Record<string, unknown>;
+  } catch (e) {
+    console.error('Failed to parse analyzeFunctionSnippet response', e);
+  }
+
+  const rawSub = parsedResult.subFunctions;
+  const subFunctions: SubFunction[] = Array.isArray(rawSub)
+    ? (rawSub as Record<string, unknown>[]).map((s) => ({
+        name: (s.name as string) ?? '',
+        description: (s.description as string) ?? '',
+        file: (s.file as string) ?? '',
+        drillDown: typeof s.drillDown === 'number' ? s.drillDown : 0,
+      }))
+    : [];
+
+  const result: SubFunctionAnalysisResult = {
+    entryFunctionName: (parsedResult.entryFunctionName as string) || functionName,
+    subFunctions,
+  };
+
+  return {
+    result,
+    details: { request: requestPayload, response: parsedResult }
   };
 }
