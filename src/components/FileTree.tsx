@@ -7,9 +7,10 @@ interface FileTreeProps {
   nodes: FileNode[];
   onSelect: (node: FileNode) => void;
   selectedPath?: string;
+  entryPath?: string;
 }
 
-export default function FileTree({ nodes, onSelect, selectedPath }: FileTreeProps) {
+export default function FileTree({ nodes, onSelect, selectedPath, entryPath }: FileTreeProps) {
   return (
     <div className="text-sm font-mono">
       {nodes.map(node => (
@@ -18,16 +19,18 @@ export default function FileTree({ nodes, onSelect, selectedPath }: FileTreeProp
           node={node} 
           onSelect={onSelect} 
           selectedPath={selectedPath} 
+          entryPath={entryPath}
         />
       ))}
     </div>
   );
 }
 
-function TreeNode({ node, onSelect, selectedPath, depth = 0 }: { node: FileNode, onSelect: (node: FileNode) => void, selectedPath?: string, depth?: number }) {
+function TreeNode({ node, onSelect, selectedPath, entryPath, depth = 0 }: { node: FileNode, onSelect: (node: FileNode) => void, selectedPath?: string, entryPath?: string, depth?: number }) {
   const [isOpen, setIsOpen] = useState(false);
   const isSelected = selectedPath === node.path;
   const isDir = node.type === 'tree';
+  const isEntry = entryPath === node.path;
 
   const handleClick = () => {
     if (isDir) {
@@ -56,6 +59,11 @@ function TreeNode({ node, onSelect, selectedPath, depth = 0 }: { node: FileNode,
         </div>
         {isDir && <Folder className="w-3.5 h-3.5 mr-1.5 text-gray-400 shrink-0" />}
         <span className="truncate">{node.name}</span>
+        {isEntry && (
+          <span className="ml-2 shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+            ENTRY
+          </span>
+        )}
       </div>
       {isDir && isOpen && node.children && (
         <div>
@@ -65,6 +73,7 @@ function TreeNode({ node, onSelect, selectedPath, depth = 0 }: { node: FileNode,
               node={child} 
               onSelect={onSelect} 
               selectedPath={selectedPath} 
+              entryPath={entryPath}
               depth={depth + 1} 
             />
           ))}
