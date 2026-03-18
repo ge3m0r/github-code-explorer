@@ -11,6 +11,7 @@ export interface SettingsEnvSnapshot {
   aiBaseUrl: string;
   aiModel: string;
   maxDrillDepth: number;
+  maxKeySubFunctionsPerLayer: number;
   aiApiKeyConfigured: boolean;
   githubTokenConfigured: boolean;
 }
@@ -85,7 +86,11 @@ function readEnvRaw() {
   const aiModel = (env.AI_MODEL || DEFAULT_SETTINGS.aiModel).trim();
   const githubToken = (env.GITHUB_TOKEN || '').trim();
   const maxDrillDepth = safeParseInt(env.AI_DRILL_DOWN_MAX_DEPTH || DEFAULT_SETTINGS.maxDrillDepth, DEFAULT_SETTINGS.maxDrillDepth);
-  return { aiBaseUrl, aiApiKey, aiModel, githubToken, maxDrillDepth };
+  const maxKeySubFunctionsPerLayer = safeParseInt(
+    env.AI_KEY_SUB_FUNCTIONS_PER_LAYER || DEFAULT_SETTINGS.maxKeySubFunctionsPerLayer,
+    DEFAULT_SETTINGS.maxKeySubFunctionsPerLayer,
+  );
+  return { aiBaseUrl, aiApiKey, aiModel, githubToken, maxDrillDepth, maxKeySubFunctionsPerLayer };
 }
 
 function normalizeSettings(input: Partial<AppSettings>): AppSettings {
@@ -118,6 +123,9 @@ function applyEnvOverride(persisted: Partial<AppSettings>) {
   if (env.aiModel) next.aiModel = env.aiModel;
   if (env.githubToken) next.githubToken = env.githubToken;
   if (Number.isFinite(env.maxDrillDepth)) next.maxDrillDepth = env.maxDrillDepth;
+   if (Number.isFinite(env.maxKeySubFunctionsPerLayer)) {
+    next.maxKeySubFunctionsPerLayer = env.maxKeySubFunctionsPerLayer;
+  }
 
   return normalizeSettings(next);
 }
@@ -165,6 +173,7 @@ export function getSettingsEnvSnapshot(): SettingsEnvSnapshot {
     aiBaseUrl: env.aiBaseUrl,
     aiModel: env.aiModel,
     maxDrillDepth: clampInt(env.maxDrillDepth, 0, 20),
+    maxKeySubFunctionsPerLayer: clampInt(env.maxKeySubFunctionsPerLayer, 1, 50),
     aiApiKeyConfigured: !!env.aiApiKey,
     githubTokenConfigured: !!env.githubToken,
   };
