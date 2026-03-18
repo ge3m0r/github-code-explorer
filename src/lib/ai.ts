@@ -1,26 +1,36 @@
 import { GoogleGenAI, Type } from '@google/genai';
+import { getSettings } from './settings';
 
-const aiApiKey = process.env.AI_API_KEY || process.env.GEMINI_API_KEY;
-const aiBaseUrl = process.env.AI_BASE_URL?.trim();
-const isOpenAI = !!aiBaseUrl;
-const openAIModel = (process.env.AI_MODEL || 'deepseek-chat').trim();
 const geminiModel = 'gemini-3-flash-preview';
 
-const ai = new GoogleGenAI({
-  apiKey: aiApiKey,
-  ...(aiBaseUrl
-    ? {
-        httpOptions: {
-          baseUrl: aiBaseUrl,
-          ...(aiApiKey ? { headers: { Authorization: `Bearer ${aiApiKey}` } } : {}),
-        },
-      }
-    : {}),
-});
+function getAiRuntimeConfig() {
+  const settings = getSettings();
+  const aiApiKey = settings.aiApiKey;
+  const aiBaseUrl = settings.aiBaseUrl?.trim();
+  const isOpenAI = !!aiBaseUrl;
+  const openAIModel = (settings.aiModel || 'deepseek-chat').trim();
+  return { aiApiKey, aiBaseUrl, isOpenAI, openAIModel };
+}
+
+function createAiClient() {
+  const { aiApiKey, aiBaseUrl } = getAiRuntimeConfig();
+  return new GoogleGenAI({
+    apiKey: aiApiKey,
+    ...(aiBaseUrl
+      ? {
+          httpOptions: {
+            baseUrl: aiBaseUrl,
+            ...(aiApiKey ? { headers: { Authorization: `Bearer ${aiApiKey}` } } : {}),
+          },
+        }
+      : {}),
+  });
+}
 
 async function openAIChatCompletion(
   prompt: string,
 ): Promise<{ text: string; request: unknown; response: unknown }> {
+  const { aiBaseUrl, aiApiKey, openAIModel } = getAiRuntimeConfig();
   const url = `${aiBaseUrl!.replace(/\/$/, '')}/chat/completions`;
   const body = {
     model: openAIModel,
@@ -226,6 +236,7 @@ function buildAiDetails(
   provider: 'openai' | 'gemini',
   usage?: AiUsageStats,
 ): AiCallDetails {
+  const { openAIModel } = getAiRuntimeConfig();
   return {
     request,
     response,
@@ -239,6 +250,7 @@ async function runStructuredJsonPrompt<T>(
   prompt: string,
   schema: Record<string, unknown>,
 ): Promise<{ parsedResult: T; details: AiCallDetails }> {
+  const { isOpenAI } = getAiRuntimeConfig();
   let text = '{}';
   let requestPayload: unknown;
   let rawResponse: unknown;
@@ -249,6 +261,7 @@ async function runStructuredJsonPrompt<T>(
     requestPayload = out.request;
     rawResponse = out.response;
   } else {
+    const ai = createAiClient();
     const request = {
       model: geminiModel,
       contents: prompt,
@@ -281,7 +294,8 @@ async function runStructuredJsonPrompt<T>(
   };
 }
 
-const KEY_SUB_FUNCTION_RULES = `
+function buildKeySubFunctionRules(maxCount: number) {
+  return `
 分析要求：
 1. 只返回真正影响主流程的关键调用，例如核心业务决策、跨模块协作、数据库或缓存访问、消息队列、网络请求、文件读写、任务编排、权限校验、事务控制、重要状态变更。
 2. 不要返回常规数据结构操作、字符串操作、序列化或反序列化、日志打印、简单判空、类型转换、格式化、getter/setter、构造函数、工具函数、标准库调用、集合遍历、map/filter/reduce/sort 等非关键调用。
@@ -289,8 +303,9 @@ const KEY_SUB_FUNCTION_RULES = `
 4. 只返回当前函数直接调用的关键子函数，不要返回间接推断的调用。
 5. 对面向对象语言，如果函数或方法定义在类中，name 和 entryFunctionName 都必须返回 "ClassName::methodName"；普通函数才返回 "functionName"。
 6. drillDown 仅用于判断是否值得继续分析：1 表示关键且值得下钻，0 表示不确定，-1 表示无需下钻。
-7. 最多返回 12 个关键子函数；如果没有明显关键调用，返回空数组。
+7. 最多返回 ${maxCount} 个关键子函数；如果没有明显关键调用，返回空数组。
 `.trim();
+}
 
 function normalizeNodeAttributes(value: unknown): NodeAttribute[] {
   if (!Array.isArray(value)) {
@@ -452,6 +467,8 @@ export async function analyzeSubFunctions(
   fileContent: string,
   allFiles: string[],
 ): Promise<{ result: SubFunctionAnalysisResult; details: AiCallDetails }> {
+  const settings = getSettings();
+  const maxCount = settings.maxKeySubFunctionsPerLayer || 10;
   const prompt = `请分析以下项目入口文件，识别其中的主入口函数，以及它调用的关键子函数。
 项目简介: ${projectSummary}
 当前文件路径: ${filePath}
@@ -463,7 +480,7 @@ ${allFiles.slice(0, 1000).join('\n')}
 ${truncateLargeContent(fileContent)}
 \`\`\`
 
-${KEY_SUB_FUNCTION_RULES}
+${buildKeySubFunctionRules(maxCount)}
 
 请只返回 JSON，结构如下：
 {
@@ -510,7 +527,7 @@ ${KEY_SUB_FUNCTION_RULES}
   return {
     result: {
       entryFunctionName: (parsedResult.entryFunctionName as string) || '未知入口函数',
-      subFunctions: normalizeSubFunctions(parsedResult.subFunctions),
+      subFunctions: normalizeSubFunctions(parsedResult.subFunctions).slice(0, maxCount),
     },
     details,
   };
@@ -613,6 +630,8 @@ export async function analyzeFunctionSnippet(
   resolvedFilePath: string,
   allFiles: string[],
 ): Promise<{ result: SubFunctionAnalysisResult; details: AiCallDetails }> {
+  const settings = getSettings();
+  const maxCount = settings.maxKeySubFunctionsPerLayer || 10;
   const prompt = `请分析以下函数代码片段，识别该函数调用的关键子函数。
 项目简介: ${projectSummary}
 当前函数名: ${functionName}
@@ -625,7 +644,7 @@ ${allFiles.slice(0, 500).join('\n')}
 ${snippet.slice(0, 12000)}
 \`\`\`
 
-${KEY_SUB_FUNCTION_RULES}
+${buildKeySubFunctionRules(maxCount)}
 
 请只返回 JSON：
 - entryFunctionName: 当前函数名，保持 ${functionName} 的命名格式
@@ -656,7 +675,7 @@ ${KEY_SUB_FUNCTION_RULES}
   return {
     result: {
       entryFunctionName: (parsedResult.entryFunctionName as string) || functionName,
-      subFunctions: normalizeSubFunctions(parsedResult.subFunctions),
+      subFunctions: normalizeSubFunctions(parsedResult.subFunctions).slice(0, maxCount),
     },
     details,
   };

@@ -9,6 +9,7 @@ import {
   looksLikeSourceCodeContent,
   searchTextInPaths,
 } from './dataSource';
+import { getSettings } from './settings';
 
 export type {
   DataSource,
@@ -48,7 +49,7 @@ export function parseGithubUrl(url: string): RepoInfo | null {
 
 function githubHeaders(): Record<string, string> {
   const headers: Record<string, string> = { Accept: 'application/vnd.github.v3+json' };
-  const token = (process.env as Record<string, string | undefined>).GITHUB_TOKEN?.trim();
+  const token = getSettings().githubToken?.trim();
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }

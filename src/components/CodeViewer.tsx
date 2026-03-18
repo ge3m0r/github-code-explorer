@@ -38,6 +38,20 @@ interface CodeViewerProps {
   highlightedEndLine?: number;
 }
 
+function clampRange(
+  startLine: number | undefined,
+  endLine: number | undefined,
+  totalLines: number,
+): { start: number; end: number } | null {
+  if (!startLine || startLine <= 0 || totalLines <= 0) {
+    return null;
+  }
+  const start = Math.max(1, Math.min(totalLines, Math.floor(startLine)));
+  const rawEnd = endLine && endLine > 0 ? Math.floor(endLine) : start;
+  const end = Math.max(start, Math.min(totalLines, rawEnd));
+  return { start, end };
+}
+
 function getLanguage(filename: string): string {
   const ext = filename.split('.').pop()?.toLowerCase();
   switch (ext) {
@@ -84,23 +98,34 @@ export default function CodeViewer({
 }: CodeViewerProps) {
   const language = getLanguage(filename);
   const containerRef = useRef<HTMLDivElement>(null);
+  const lineCount = code ? code.split('\n').length : 0;
+  const range = clampRange(highlightedStartLine, highlightedEndLine, lineCount);
 
   useEffect(() => {
-    if (!containerRef.current || !highlightedStartLine) {
+    if (!containerRef.current || !range) {
       return;
     }
 
     const target = containerRef.current.querySelector<HTMLElement>(
-      `[data-line-number="${highlightedStartLine}"]`,
+      `[data-line-number="${range.start}"]`,
     );
 
     if (target) {
       target.scrollIntoView({ block: 'center' });
     }
-  }, [code, highlightedStartLine, highlightedEndLine]);
+  }, [code, range?.start, range?.end]);
 
   return (
     <div ref={containerRef} className="h-full overflow-auto bg-white">
+      <style>
+        {`
+        @keyframes gce-highlight-pulse {
+          0% { filter: saturate(1); }
+          50% { filter: saturate(1.2); }
+          100% { filter: saturate(1); }
+        }
+        `}
+      </style>
       <SyntaxHighlighter
         language={language}
         style={oneLight}
@@ -120,17 +145,25 @@ export default function CodeViewer({
           textAlign: 'right',
         }}
         lineProps={(lineNumber) => {
-          const active =
-            highlightedStartLine !== undefined &&
-            lineNumber >= highlightedStartLine &&
-            lineNumber <= (highlightedEndLine || highlightedStartLine);
+          const active = !!range && lineNumber >= range.start && lineNumber <= range.end;
+          const isStart = !!range && lineNumber === range.start;
+          const isEnd = !!range && lineNumber === range.end;
 
           return {
             'data-line-number': lineNumber,
             style: active
               ? {
                   display: 'block',
-                  backgroundColor: '#fff7d6',
+                  backgroundColor: '#eef2ff',
+                  borderLeft: '4px solid #6366f1',
+                  paddingLeft: '10px',
+                  marginLeft: '-10px',
+                  boxShadow: isStart
+                    ? 'inset 0 2px 0 rgba(79,70,229,0.35), inset 0 -1px 0 rgba(79,70,229,0.15)'
+                    : isEnd
+                      ? 'inset 0 -2px 0 rgba(79,70,229,0.35), inset 0 1px 0 rgba(79,70,229,0.15)'
+                      : 'inset 0 1px 0 rgba(79,70,229,0.08)',
+                  animation: 'gce-highlight-pulse 420ms ease-in-out 1',
                 }
               : { display: 'block' },
           };
