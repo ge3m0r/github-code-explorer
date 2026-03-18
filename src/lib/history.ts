@@ -1,5 +1,6 @@
 import type { AiAnalysisResult, ModuleAnalysisResult, SubFunction, SubFunctionAnalysisResult } from './ai';
-import type { FileNode, RepoInfo } from './github';
+import { normalizeDataSourceLocation } from './dataSource';
+import type { DataSourceDescriptor, DataSourceType, FileNode } from './dataSource';
 
 const STORAGE_KEY = 'github-code-explorer:project-history';
 const LEGACY_MARKDOWN_STORAGE_KEY = 'github-code-explorer:markdown-files';
@@ -28,6 +29,10 @@ export interface WorkflowStepSnapshot {
 
 export interface ProjectAnalysisRecord {
   id: string;
+  sourceType: DataSourceType;
+  sourceId: string;
+  sourceLabel: string;
+  sourceOrigin?: 'directory' | 'archive' | 'remote';
   url: string;
   projectName: string;
   owner: string;
@@ -53,8 +58,7 @@ export interface ProjectAnalysisRecord {
 }
 
 interface BuildRecordInput {
-  url: string;
-  repoInfo: RepoInfo | null;
+  source: DataSourceDescriptor | null;
   tree: FileNode[];
   aiResult: AiAnalysisResult | null;
   subFunctionResult: SubFunctionAnalysisResult | null;
@@ -73,30 +77,19 @@ function canUseStorage() {
 }
 
 export function normalizeGithubUrl(url: string) {
-  try {
-    let nextUrl = url.trim();
-    if (!nextUrl.startsWith('http')) {
-      nextUrl = `https://${nextUrl}`;
-    }
-
-    const parsed = new URL(nextUrl);
-    const parts = parsed.pathname.split('/').filter(Boolean);
-    if (parts.length < 2) {
-      return url.trim();
-    }
-
-    return `https://github.com/${parts[0]}/${parts[1].replace(/\.git$/, '')}`;
-  } catch {
-    return url.trim();
-  }
+  return normalizeDataSourceLocation('github', url);
 }
 
-function makeRecordId(owner: string, repo: string) {
+function makeRecordId(sourceType: DataSourceType, sourceId: string) {
+  return `${sourceType}__${sourceId}`.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
+}
+
+function makeLegacyRecordId(owner: string, repo: string) {
   return `${owner}__${repo}`.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
 }
 
-function makeMarkdownPath(owner: string, repo: string) {
-  return `localstorage://markdown/${makeRecordId(owner, repo)}.md`;
+function makeMarkdownPath(recordId: string) {
+  return `localstorage://markdown/${recordId}.md`;
 }
 
 function readJsonStorage<T>(key: string, fallback: T): T {
@@ -162,11 +155,29 @@ export function getMarkdownFile(markdownPath: string) {
 }
 
 function hydrateRecord(record: StoredProjectAnalysisRecord): ProjectAnalysisRecord {
-  const markdownPath = record.markdownPath || makeMarkdownPath(record.owner, record.repo);
+  const normalizedUrl = normalizeGithubUrl(record.url || '');
+  const fallbackSourceId =
+    record.sourceId ||
+    (record.sourceType === 'local'
+      ? normalizeDataSourceLocation('local', record.url || record.projectName || '')
+      : `github:${normalizedUrl.replace(/^https?:\/\/github\.com\//i, '').toLowerCase()}`);
+  const sourceType = (record.sourceType || 'github') as DataSourceType;
+  const sourceLabel = record.sourceLabel || (record.owner && record.repo ? `${record.owner}/${record.repo}` : record.projectName || 'unknown');
+  const recordId = record.id || makeRecordId(sourceType, fallbackSourceId);
+  const markdownPath = record.markdownPath || makeMarkdownPath(recordId || makeLegacyRecordId(record.owner, record.repo));
   const markdown = getMarkdownFile(markdownPath) || record.markdown || '';
+  const owner = record.owner || (sourceType === 'github' ? sourceLabel.split('/')[0] || 'unknown' : 'local');
+  const repo = record.repo || (sourceType === 'github' ? sourceLabel.split('/')[1] || 'unknown' : sourceLabel);
 
   return {
     ...record,
+    id: recordId,
+    sourceType,
+    sourceId: fallbackSourceId,
+    sourceLabel,
+    owner,
+    repo,
+    repoKey: record.repoKey || `${owner}/${repo}`,
     markdownPath,
     markdown,
   };
@@ -481,18 +492,29 @@ function buildProjectMarkdown(record: Omit<ProjectAnalysisRecord, 'markdown'>) {
 }
 
 export function buildProjectAnalysisRecord(input: BuildRecordInput): ProjectAnalysisRecord | null {
-  if (!input.repoInfo) {
+  if (!input.source) {
     return null;
   }
 
-  const markdownPath = makeMarkdownPath(input.repoInfo.owner, input.repoInfo.repo);
+  const source = input.source;
+  const sourceType = source.type;
+  const sourceId = source.id || normalizeDataSourceLocation(source.type, source.location);
+  const owner = source.owner || (sourceType === 'github' ? source.label.split('/')[0] || 'unknown' : 'local');
+  const repo = source.repo || (sourceType === 'github' ? source.label.split('/')[1] || 'unknown' : source.label);
+  const recordId = makeRecordId(sourceType, sourceId);
+  const markdownPath = makeMarkdownPath(recordId);
+  const normalizedUrl = normalizeDataSourceLocation(sourceType, source.location);
   const recordWithoutMarkdown: Omit<ProjectAnalysisRecord, 'markdown'> = {
-    id: makeRecordId(input.repoInfo.owner, input.repoInfo.repo),
-    url: normalizeGithubUrl(input.url),
-    projectName: `${input.repoInfo.owner}/${input.repoInfo.repo}`,
-    owner: input.repoInfo.owner,
-    repo: input.repoInfo.repo,
-    repoKey: `${input.repoInfo.owner}/${input.repoInfo.repo}`,
+    id: recordId,
+    sourceType,
+    sourceId,
+    sourceLabel: source.label,
+    sourceOrigin: source.origin,
+    url: normalizedUrl,
+    projectName: sourceType === 'github' ? `${owner}/${repo}` : source.label,
+    owner,
+    repo,
+    repoKey: `${owner}/${repo}`,
     analyzedAt: input.analyzedAt || new Date().toISOString(),
     projectSummary: input.aiResult?.projectSummary || '',
     mainLanguage: input.aiResult?.mainLanguage || '',
@@ -532,7 +554,28 @@ export function getProjectHistoryRecord(id: string) {
 
 export function getProjectHistoryRecordByUrl(url: string) {
   const normalizedUrl = normalizeGithubUrl(url);
-  return getProjectHistory().find((item) => normalizeGithubUrl(item.url) === normalizedUrl) || null;
+  return (
+    getProjectHistory().find(
+      (item) => (item.sourceType || 'github') === 'github' && normalizeGithubUrl(item.url) === normalizedUrl,
+    ) || null
+  );
+}
+
+export function getProjectHistoryRecordBySource(sourceType: DataSourceType, sourceId: string) {
+  return (
+    getProjectHistory().find((item) => {
+      if ((item.sourceType || 'github') !== sourceType) {
+        return false;
+      }
+      if (item.sourceId) {
+        return item.sourceId === sourceId;
+      }
+      if (sourceType === 'github') {
+        return normalizeGithubUrl(item.url) === normalizeGithubUrl(sourceId);
+      }
+      return normalizeDataSourceLocation('local', item.url) === normalizeDataSourceLocation('local', sourceId);
+    }) || null
+  );
 }
 
 export function saveProjectHistory(record: ProjectAnalysisRecord) {
@@ -546,7 +589,7 @@ export function saveProjectHistory(record: ProjectAnalysisRecord) {
   const next = [recordWithoutMarkdown, ...readStoredProjectHistory().filter((item) => item.id !== record.id)]
     .map((item) => ({
       ...item,
-      markdownPath: item.markdownPath || makeMarkdownPath(item.owner, item.repo),
+      markdownPath: item.markdownPath || makeMarkdownPath(item.id || makeLegacyRecordId(item.owner, item.repo)),
     }))
     .sort((a, b) => new Date(b.analyzedAt).getTime() - new Date(a.analyzedAt).getTime())
     .slice(0, MAX_HISTORY_ITEMS);
