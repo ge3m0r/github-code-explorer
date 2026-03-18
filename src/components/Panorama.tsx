@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type RefObject } from 'react';
 import { Loader2 } from 'lucide-react';
 import { TransformComponent, TransformWrapper } from 'react-zoom-pan-pinch';
 import { FunctionModule, NodeAttribute, SubFunction, SubFunctionAnalysisResult } from '../lib/ai';
@@ -23,6 +23,7 @@ interface PanoramaProps {
   moduleMap: Map<string, FunctionModule>;
   selectedModuleId: string | null;
   drillingNodeId?: string | null;
+  viewportRef?: RefObject<HTMLDivElement>;
   onNodeSelect?: (node: PanoramaNodeRef) => void;
   onNodeDrillDown?: (node: PanoramaDrillTarget) => void;
 }
@@ -241,6 +242,7 @@ export default function Panorama({
   moduleMap,
   selectedModuleId,
   drillingNodeId = null,
+  viewportRef,
   onNodeSelect,
   onNodeDrillDown,
 }: PanoramaProps) {
@@ -405,7 +407,7 @@ export default function Panorama({
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div ref={viewportRef} className="flex-1 min-h-0 overflow-hidden">
         <TransformWrapper initialScale={1} minScale={0.1} maxScale={4} centerOnInit={false} wheel={{ step: 0.1 }}>
           <TransformComponent wrapperStyle={{ width: '100%', height: '100%' }}>
             <div className="relative" style={{ width: layout.layoutWidth, height: layout.layoutHeight }}>

@@ -43,7 +43,7 @@ function createInitialWorkflowSteps(): WorkflowStepSnapshot[] {
 }
 
 function getWorkflowStepLabel(stepId: WorkflowStepId | null) {
-  return WORKFLOW_STEP_DEFS.find((step) => step.id === stepId)?.label || '鏈煡姝ラ';
+  return WORKFLOW_STEP_DEFS.find((step) => step.id === stepId)?.label || '未知步骤';
 }
 
 function LogItem({ log, defaultExpanded = false }: { log: AnalysisLogEntry, defaultExpanded?: boolean }) {
@@ -62,7 +62,7 @@ function LogItem({ log, defaultExpanded = false }: { log: AnalysisLogEntry, defa
             className="text-indigo-600 hover:text-indigo-700 text-xs flex items-center font-medium transition-colors"
           >
             {expanded ? <ChevronDown className="w-3.5 h-3.5 mr-1"/> : <ChevronRight className="w-3.5 h-3.5 mr-1"/>}
-            {expanded ? '鏀惰捣璇︽儏' : '鏌ョ湅璇︽儏 (JSON)'}
+            {expanded ? '收起详情' : '查看详情 (JSON)'}
           </button>
           {expanded && (
             <div className="mt-2 p-3 bg-gray-900 text-gray-100 rounded-lg text-xs overflow-x-auto font-mono shadow-inner">
@@ -127,7 +127,7 @@ export default function Analyze() {
     totalTokens: 0,
   });
   const logsEndRef = useRef<HTMLDivElement>(null);
-  const panoramaPanelRef = useRef<HTMLDivElement>(null);
+  const panoramaViewportRef = useRef<HTMLDivElement>(null);
   const workflowStepsRef = useRef<WorkflowStepSnapshot[]>(createInitialWorkflowSteps());
   const analyzedUrlRef = useRef<string | null>(null);
   const analyzedAtRef = useRef<string | null>(null);
@@ -428,7 +428,7 @@ export default function Analyze() {
       recordAiUsage(details);
       suggestedFiles = result.possibleFiles || [];
     } catch {
-      addLog('涓嬮捇瀹氫綅', `[${sub.name}] AI 鎺ㄦ祴鏂囦欢澶辫触锛屽皢浣跨敤椤圭洰鎼滅储`);
+      addLog('下钻定位', `[${sub.name}] AI 推测文件失败，将使用项目搜索`);
     }
 
     const loc = await locateFunctionInProject(sub.name, fallbackParentFilePath, suggestedFiles, files, fetchContent);
@@ -504,7 +504,7 @@ export default function Analyze() {
       candidates.push({
         name: child.name,
         file: resolvedFilePath,
-        description: child.description || '鏆傛棤璇存槑',
+        description: child.description || '暂无说明',
         snippet,
         parentName: parentNode.name,
         parentFile: parentFilePath,
@@ -516,7 +516,7 @@ export default function Analyze() {
 
   const maxDrillDepth = Math.max(0, parseInt(process.env.AI_DRILL_DOWN_MAX_DEPTH || '3', 10) || 3);
 
-  /** 瀵瑰崟涓瓙鍑芥暟杩涜涓嬮捇锛氬畾浣?-> 鎻愬彇鐗囨 -> AI 鍒嗘瀽瀛愬嚱鏁?-> 閫掑綊澶勭悊 drillDown 0/1 鐨勫瓙瀛欍€俤epth 浠庡叆鍙ｇ畻璧凤細1=鍏ュ彛鐨勭涓€灞傚瓙鍑芥暟锛?=鍐嶄笅涓€灞?*/
+  /** 对单个子函数进行下钻：定位 -> 提取片段 -> AI 分析子函数 -> 递归处理 drillDown 0/1 的子孙。depth 从入口算起：1=入口的第一层子函数，2=再下一层。*/
   const drillDownOne = async (
     sub: SubFunction,
     parentFilePath: string,
@@ -527,7 +527,7 @@ export default function Analyze() {
     projectSummary: string
   ): Promise<SubFunction> => {
     if (depth >= maxDrillDepth) {
-      addLog('涓嬮捇鍋滄', `[${sub.name}] 宸茶揪鏈€澶т笅閽诲眰鏁?${maxDrillDepth}锛堜粠鍏ュ彛绠楄捣锛夛紝鍋滄涓嬮捇`);
+      addLog('下钻停止', `[${sub.name}] 已达到最大下钻层数 ${maxDrillDepth}（从入口算起），停止下钻`);
       return { ...sub, stopReason: 'max_depth' };
     }
     const fetchContent = (path: string) => readDataSourceFile(path);
@@ -537,7 +537,7 @@ export default function Analyze() {
       recordAiUsage(details);
       suggestedFiles = result.possibleFiles || [];
     } catch (e: any) {
-      addLog('涓嬮捇瀹氫綅', `[${sub.name}] AI 鎺ㄦ祴鏂囦欢澶辫触锛屽皢浣跨敤椤圭洰鎼滅储`);
+      addLog('下钻定位', `[${sub.name}] AI 推测文件失败，将使用项目搜索`);
     }
     const loc = await locateFunctionInProject(
       sub.name,
@@ -547,14 +547,14 @@ export default function Analyze() {
       fetchContent
     );
     if (!loc.found || !loc.resolvedFile) {
-      addLog('涓嬮捇鍋滄', `[${sub.name}] 鏈壘鍒板嚱鏁板畾涔夛紝鍋滄涓嬮捇`);
+      addLog('下钻停止', `[${sub.name}] 未找到函数定义，停止下钻`);
       return { ...sub, stopReason: 'not_found' };
     }
     if (looksLikeSystemOrLibrary(sub.name, loc.resolvedFile)) {
-      addLog('涓嬮捇鍋滄', `[${sub.name}] 鍒ゅ畾涓虹郴缁?搴撳嚱鏁帮紝鍋滄涓嬮捇`);
+      addLog('下钻停止', `[${sub.name}] 判定为系统/库函数，停止下钻`);
       return { ...sub, file: loc.resolvedFile, stopReason: 'system_function' };
     }
-    addLog('涓嬮捇瀹氫綅', `[${sub.name}] 宸插畾浣嶅埌 ${loc.resolvedFile}锛屽紑濮嬪垎鏋愬瓙鍑芥暟`);
+    addLog('下钻定位', `[${sub.name}] 已定位到 ${loc.resolvedFile}，开始分析子函数`);
     let childResult: SubFunctionAnalysisResult;
     try {
       const { result, details } = await analyzeFunctionSnippet(
@@ -591,7 +591,7 @@ export default function Analyze() {
     };
   };
 
-  /** 瀵圭涓€灞傚瓙鍑芥暟涓?drillDown 涓?0 鎴?1 鐨勯」杩涜涓嬮捇锛屾瘡瀹屾垚涓€涓珛鍗虫洿鏂板叏鏅浘锛岄伩鍏嶉暱鏃堕棿鏃犲弽棣?*/
+  /** 对第一层子函数中 drillDown 为 0 或 1 的项进行下钻，每完成一个即更新全景图，避免长时间无反馈。*/
   const runDrillDown = async (
     subResult: SubFunctionAnalysisResult,
     entryFilePath: string,
@@ -604,7 +604,7 @@ export default function Analyze() {
     for (let i = 0; i < subs.length; i++) {
       const sub = subs[i];
       if (sub.drillDown !== 0 && sub.drillDown !== 1) continue;
-      addLog('涓嬮捇鍒嗘瀽', `寮€濮嬩笅閽诲垎鏋愬瓙鍑芥暟 ${i + 1}/${subs.length}: ${sub.name}`);
+      addLog('下钻分析', `开始下钻分析子函数 ${i + 1}/${subs.length}: ${sub.name}`);
       const processed = await drillDownOne(sub, entryFilePath, 1, owner, repo, files, projectSummary);
       setSubFunctionResult((prev) => {
         if (!prev || prev.entryFunctionName !== subResult.entryFunctionName) return prev;
@@ -612,7 +612,7 @@ export default function Analyze() {
         return { ...prev, subFunctions: next };
       });
     }
-    addLog('涓嬮捇瀹屾垚', `宸插 ${subs.filter(s => s.drillDown === 0 || s.drillDown === 1).length} 涓叧閿瓙鍑芥暟瀹屾垚涓嬮捇`);
+    addLog('下钻完成', `已对 ${subs.filter(s => s.drillDown === 0 || s.drillDown === 1).length} 个关键子函数完成下钻`);
   };
 
   const runModuleAnalysis = async ({
@@ -1002,7 +1002,7 @@ export default function Analyze() {
   const analyzeProjectFiles = async (files: string[], owner: string, repo: string) => {
     startWorkflowStep('project_summary');
     setLoadingAi(true);
-    addLog('AI 鍒嗘瀽', `寮€濮嬭皟鐢?AI 鍒嗘瀽椤圭洰鎶€鏈爤鍜屽叆鍙ｆ枃浠?..`);
+    addLog('AI 分析', `开始调用 AI 分析项目技术栈和入口文件...`);
     try {
       const { result, details } = await analyzeProject(files);
       recordAiUsage(details);
@@ -1031,11 +1031,11 @@ export default function Analyze() {
       }
 
       startWorkflowStep('verify_entry');
-      addLog('鍏ュ彛鐮斿垽', `褰撳墠淇濈暀浜?${filteredEntryFiles.length} 涓簮鐮佸叆鍙ｅ€欓€夛紝寮€濮嬮€愪釜鐮斿垽...`);
+      addLog('入口研判', `当前保留了 ${filteredEntryFiles.length} 个源码入口候选，开始逐个研判...`);
 
       const candidateContents: Array<{ filePath: string; content: string }> = [];
       for (const filePath of filteredEntryFiles) {
-        addLog('璇诲彇鏂囦欢', `姝ｅ湪鑾峰彇鍙兘鐨勫叆鍙ｆ枃浠跺唴瀹癸細${filePath}`);
+        addLog('读取文件', `正在获取可能的入口文件内容：${filePath}`);
         try {
           const fileContent = await readDataSourceFile(filePath);
           candidateContents.push({ filePath, content: fileContent });
@@ -1051,11 +1051,11 @@ export default function Analyze() {
           recordAiUsage(verificationDetails);
 
           if (!verificationResult.isEntryFile) {
-            addLog('鐮斿垽澶辫触', `${filePath} 涓嶆槸椤圭洰鍏ュ彛鏂囦欢銆傜悊鐢憋細${verificationResult.reason}`, verificationDetails);
+            addLog('研判失败', `${filePath} 不是项目入口文件。理由：${verificationResult.reason}`, verificationDetails);
             continue;
           }
 
-          addLog('鐮斿垽鎴愬姛', `纭 ${filePath} 鏄」鐩叆鍙ｆ枃浠躲€傜悊鐢憋細${verificationResult.reason}`, verificationDetails);
+          addLog('研判成功', `确认 ${filePath} 是项目入口文件。理由：${verificationResult.reason}`, verificationDetails);
           setAiResult((prev) =>
             prev ? { ...prev, verifiedEntryFile: filePath, verifiedEntryReason: verificationResult.reason } : null,
           );
@@ -1070,12 +1070,12 @@ export default function Analyze() {
           );
           return;
         } catch (err: any) {
-          addLog('鐮斿垽鍑洪敊', `澶勭悊鏂囦欢 ${filePath} 鏃跺彂鐢熼敊璇細${err.message}`);
+          addLog('研判出错', `处理文件 ${filePath} 时发生错误：${err.message}`);
         }
       }
 
       if (candidateContents.length > 0) {
-        addLog('鍏滃簳鐮斿垽', '鎵€鏈夊€欓€夊潎鏈崟鐙‘璁わ紝姝ｅ湪鐢?AI 瀵规瘮鎵€鏈夊€欓€夋枃浠跺苟閫夊嚭鏈€鍙兘鐨勫叆鍙?..');
+        addLog('兜底研判', '所有候选均未单独确认，正在使用 AI 对比全部候选文件并选出最可能的入口...');
         try {
           const { result: pickResult, details: pickDetails } = await pickBestEntryFile(
             `https://github.com/${owner}/${repo}`,
@@ -1089,20 +1089,20 @@ export default function Analyze() {
           const bestContent = candidateContents.find((candidate) => candidate.filePath === bestPath)?.content ?? candidateContents[0].content;
           addLog('兜底结果', `AI 选出入口文件：${bestPath}。理由：${pickResult.reason}`, pickDetails);
           setAiResult((prev) =>
-            prev ? { ...prev, verifiedEntryFile: bestPath, verifiedEntryReason: `[鍏滃簳] ${pickResult.reason}` } : null,
+            prev ? { ...prev, verifiedEntryFile: bestPath, verifiedEntryReason: `[兜底] ${pickResult.reason}` } : null,
           );
           completeWorkflowStep('verify_entry');
           await analyzeEntryCallGraph(
             owner,
             repo,
             files,
-            { ...normalizedResult, verifiedEntryFile: bestPath, verifiedEntryReason: `[鍏滃簳] ${pickResult.reason}` },
+            { ...normalizedResult, verifiedEntryFile: bestPath, verifiedEntryReason: `[兜底] ${pickResult.reason}` },
             bestPath,
             bestContent,
           );
           return;
         } catch (err: any) {
-          addLog('鍏滃簳鐮斿垽澶辫触', `瀵规瘮閫夊嚭鍏ュ彛鏃跺彂鐢熼敊璇細${err.message}`);
+          addLog('兜底研判失败', `对比选出入口时发生错误：${err.message}`);
         }
       }
 
@@ -1118,7 +1118,7 @@ export default function Analyze() {
       console.error('AI Analysis failed:', err);
       failWorkflowStep('project_summary');
       skipWorkflowSteps(['verify_entry', 'call_graph', 'module_analysis']);
-      addLog('AI 鍒嗘瀽澶辫触', `璋冪敤 AI 鏃跺彂鐢熼敊璇細${err.message}`);
+      addLog('AI 分析失败', `调用 AI 时发生错误：${err.message}`);
     } finally {
       setLoadingAi(false);
     }
@@ -1244,7 +1244,7 @@ export default function Analyze() {
           resolved.analyzedResult,
         );
       } else {
-        addLog('鎵嬪姩涓嬮捇', `[${node.name}] 涓嬮捇缁撴潫锛屽仠姝㈠師鍥狅細${replacement.stopReason || '鏈煡'}`);
+        addLog('手动下钻', `[${node.name}] 下钻结束，停止原因：${replacement.stopReason || '未知'}`);
       }
 
       if (resolved.analyzedResult && moduleAnalysis?.modules.length && drilledChildren.length) {
@@ -1301,7 +1301,7 @@ export default function Analyze() {
         }
       }
     } catch (err: any) {
-      addLog('鎵嬪姩涓嬮捇澶辫触', `[${node.name}] ${err.message}`);
+      addLog('手动下钻失败', `[${node.name}] ${err.message}`);
     } finally {
       setLoadingSubFunctions(false);
       setManualDrillNodeId(null);
@@ -1334,16 +1334,32 @@ export default function Analyze() {
   };
 
   const handleDownloadPanoramaImage = async () => {
-    if (!panoramaPanelRef.current) {
-      addLog('全景图下载失败', '当前未找到全景图面板，请先展开全景图再尝试下载。');
+    if (!panoramaViewportRef.current) {
+      addLog('全景图下载失败', '当前未找到全景图视口，请先展开全景图再尝试下载。');
+      return;
+    }
+
+    const viewportWidth = panoramaViewportRef.current.clientWidth;
+    const viewportHeight = panoramaViewportRef.current.clientHeight;
+    if (!viewportWidth || !viewportHeight) {
+      addLog('全景图下载失败', '当前全景图视口尺寸异常，请调整布局后重试。');
       return;
     }
 
     try {
-      const dataUrl = await toPng(panoramaPanelRef.current, {
+      const dataUrl = await toPng(panoramaViewportRef.current, {
         cacheBust: true,
         pixelRatio: 2,
         backgroundColor: '#ffffff',
+        width: viewportWidth,
+        height: viewportHeight,
+        canvasWidth: viewportWidth * 2,
+        canvasHeight: viewportHeight * 2,
+        style: {
+          width: `${viewportWidth}px`,
+          height: `${viewportHeight}px`,
+          overflow: 'hidden',
+        },
       });
       const response = await fetch(dataUrl);
       const blob = await response.blob();
@@ -1408,7 +1424,7 @@ export default function Analyze() {
           : workflow.overallStatus === 'running'
             ? '进行中'
             : workflow.overallStatus === 'failed'
-              ? '澶辫触'
+              ? '失败'
               : '待开始'}
       </div>
       <div className="mt-4 text-sm font-medium text-gray-800">{workflow.currentStepLabel || '等待开始'}</div>
@@ -1431,7 +1447,7 @@ export default function Analyze() {
                 : step.status === 'running'
                   ? '进行中'
                   : step.status === 'failed'
-                    ? '澶辫触'
+                    ? '失败'
                     : step.status === 'skipped'
                       ? '已跳过'
                       : '待处理'}
@@ -1446,19 +1462,19 @@ export default function Analyze() {
     <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
       <div className="grid grid-cols-3 gap-3">
         <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-3 min-w-0">
-          <div className="text-[11px] font-medium text-gray-400 whitespace-nowrap tracking-tight">璋冪敤娆℃暟</div>
+          <div className="text-[11px] font-medium text-gray-400 whitespace-nowrap tracking-tight">调用次数</div>
           <div className="mt-3 text-[1rem] leading-none font-semibold text-gray-800 tabular-nums">{aiStats.callCount}</div>
         </div>
         <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-3 min-w-0">
-          <div className="text-[11px] font-medium text-gray-400 whitespace-nowrap tracking-tight">杈撳叆 Tokens</div>
+          <div className="text-[11px] font-medium text-gray-400 whitespace-nowrap tracking-tight">输入 Tokens</div>
           <div className="mt-3 text-[1rem] leading-none font-semibold text-gray-800 tabular-nums">{aiStats.inputTokens}</div>
         </div>
         <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-3 min-w-0">
-          <div className="text-[11px] font-medium text-gray-400 whitespace-nowrap tracking-tight">杈撳嚭 Tokens</div>
+          <div className="text-[11px] font-medium text-gray-400 whitespace-nowrap tracking-tight">输出 Tokens</div>
           <div className="mt-3 text-[1rem] leading-none font-semibold text-gray-800 tabular-nums">{aiStats.outputTokens}</div>
         </div>
       </div>
-      <div className="mt-3 text-xs text-gray-400">鎬?Tokens: {aiStats.totalTokens}</div>
+      <div className="mt-3 text-xs text-gray-400">总 Tokens: {aiStats.totalTokens}</div>
     </div>
   );
 
@@ -1472,11 +1488,11 @@ export default function Analyze() {
             className="flex items-center text-gray-500 hover:text-gray-900 transition-colors mr-6 font-medium"
           >
             <ArrowLeft className="w-5 h-5 mr-2" />
-            杩斿洖
+            返回
           </button>
           <div className="flex items-center font-semibold text-gray-900 text-lg">
             <Github className="w-6 h-6 mr-3" />
-            {repoInfo ? `${repoInfo.owner} / ${repoInfo.repo}` : '浠ｇ爜鍒嗘瀽'}
+            {repoInfo ? `${repoInfo.owner} / ${repoInfo.repo}` : '代码分析'}
           </div>
         </div>
         
@@ -1570,7 +1586,7 @@ export default function Analyze() {
           <div className="mb-8 shrink-0">
             <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4 flex items-center">
               <Activity className="w-4 h-4 mr-2 text-indigo-500" />
-              椤圭洰姒傝堪
+              项目概览
             </h2>
             {aiResult ? (
               <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm text-[13px] text-gray-600 leading-relaxed">
@@ -1579,11 +1595,11 @@ export default function Analyze() {
             ) : loadingAi ? (
               <div className="flex flex-col items-center justify-center text-gray-400 space-y-3 py-6 bg-white rounded-xl border border-gray-100 shadow-sm">
                 <Loader2 className="w-6 h-6 animate-spin text-indigo-400" />
-                <span className="text-sm">姝ｅ湪鐢熸垚姒傝堪...</span>
+                <span className="text-sm">正在生成概览...</span>
               </div>
             ) : (
               <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm text-sm text-gray-400 italic text-center">
-                绛夊緟鍒嗘瀽瀹屾垚...
+                等待分析完成...
               </div>
             )}
           </div>
@@ -1592,23 +1608,24 @@ export default function Analyze() {
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-xs font-semibold text-gray-700 flex items-center">
                 <FileText className="w-4 h-4 mr-2 text-indigo-500" />
-                椤圭洰宸ョ▼鏂囦欢
+                项目工程文件
               </h2>
               <button
                 type="button"
                 onClick={() => setIsProjectFileOpen(true)}
                 disabled={!projectRecord}
                 className="text-xs font-medium text-gray-400 hover:text-indigo-600 disabled:text-gray-300 transition-colors"
-                title="鏌ョ湅椤圭洰宸ョ▼鏂囦欢"
+                title="查看项目工程文件"
               >
-                鏌ョ湅
+                查看
               </button>
             </div>
             <div className="rounded-[24px] border border-gray-200 bg-white p-6 shadow-[0_10px_30px_rgba(15,23,42,0.06)]">
               {projectRecord ? (
                 <div className="space-y-5">
                   <p className="text-[13px] leading-7 text-gray-600">
-                    Markdown 宸ョ▼鏂囦欢鍖呭惈浠撳簱淇℃伅銆佹枃浠跺垪琛ㄣ€佽皟鐢ㄦ爤銆佹ā鍧楀垝鍒嗗拰 Agent 宸ヤ綔鏃ュ織銆?                  </p>
+                    Markdown 工程文件包含仓库信息、文件列表、调用栈、模块划分和 Agent 工作日志。
+                  </p>
                   <div className="text-xs font-mono text-gray-400 break-all">{projectRecord.markdownPath}</div>
                   <div className="flex items-center gap-3 flex-wrap">
                     <button
@@ -1616,7 +1633,7 @@ export default function Analyze() {
                       onClick={() => setIsProjectFileOpen(true)}
                       className="inline-flex items-center rounded-2xl bg-[#111827] px-5 py-3 text-xs font-semibold text-white hover:bg-black transition-colors"
                     >
-                      鏌ョ湅 Markdown
+                      查看 Markdown
                     </button>
                     <button
                       type="button"
@@ -1624,7 +1641,7 @@ export default function Analyze() {
                       className="inline-flex items-center rounded-2xl bg-gray-100 px-4 py-3 text-xs font-medium text-gray-700 hover:bg-gray-200 transition-colors"
                     >
                       <Copy className="w-4 h-4 mr-2" />
-                      澶嶅埗
+                      复制
                     </button>
                     {copyStatus ? <span className="text-xs font-medium text-emerald-600">{copyStatus}</span> : null}
                   </div>
@@ -1632,15 +1649,16 @@ export default function Analyze() {
               ) : (
                 <div className="space-y-4">
                   <p className="text-[13px] leading-7 text-gray-400">
-                    Markdown 宸ョ▼鏂囦欢浼氬湪鍒嗘瀽瀹屾垚鍚庣敓鎴愶紝鍖呭惈浠撳簱淇℃伅銆佹枃浠跺垪琛ㄣ€佽皟鐢ㄦ爤銆佹ā鍧楀垝鍒嗗拰 Agent 宸ヤ綔鏃ュ織銆?                  </p>
-                  <div className="text-xs font-mono text-gray-300 break-all">localstorage://markdown/寰呯敓鎴?md</div>
+                    Markdown 工程文件会在分析完成后生成，包含仓库信息、文件列表、调用栈、模块划分和 Agent 工作日志。
+                  </p>
+                  <div className="text-xs font-mono text-gray-300 break-all">localstorage://markdown/待生成.md</div>
                   <div className="flex items-center gap-3">
                     <button
                       type="button"
                       disabled
                       className="inline-flex items-center rounded-2xl bg-gray-200 px-5 py-3 text-xs font-semibold text-gray-400"
                     >
-                      鏌ョ湅 Markdown
+                      查看 Markdown
                     </button>
                     <button
                       type="button"
@@ -1648,7 +1666,7 @@ export default function Analyze() {
                       className="inline-flex items-center rounded-2xl bg-gray-100 px-4 py-3 text-xs font-medium text-gray-300"
                     >
                       <Copy className="w-4 h-4 mr-2" />
-                      澶嶅埗
+                      复制
                     </button>
                   </div>
                 </div>
@@ -1657,7 +1675,7 @@ export default function Analyze() {
           </div>
 
           <div className="mb-8 shrink-0">
-            <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">AI 璋冪敤缁熻</h2>
+            <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">AI 调用统计</h2>
             {renderAiStatsCard()}
           </div>
 
@@ -1668,10 +1686,10 @@ export default function Analyze() {
                 type="button"
                 onClick={() => setIsLogModalOpen(true)}
                 className="text-gray-400 hover:text-indigo-600 transition-colors flex items-center text-xs font-medium"
-                title="鏌ョ湅鏃ュ織"
+                title="查看日志"
               >
                 <Maximize2 className="w-3.5 h-3.5 mr-1" />
-                鏌ョ湅鏃ュ織
+                查看日志
               </button>
             </div>
             {renderWorkflowStatusCard()}
@@ -1679,19 +1697,19 @@ export default function Analyze() {
 
           <div className="mb-8 shrink-0">
             <div className="flex justify-between items-center mb-4">
-              <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">AGENT 鏃ュ織</h2>
+              <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">AGENT 日志</h2>
               <button 
                 onClick={() => setIsLogModalOpen(true)}
                 className="text-gray-400 hover:text-indigo-600 transition-colors flex items-center text-xs font-medium"
-                title="鍏ㄥ睆鏌ョ湅鏃ュ織"
+                title="全屏查看日志"
               >
                 <Maximize2 className="w-3.5 h-3.5 mr-1" />
-                灞曞紑
+                展开
               </button>
             </div>
             <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm max-h-[250px] overflow-y-auto">
               {logs.length === 0 ? (
-                <div className="text-sm text-gray-400 text-center py-4">鏆傛棤鏃ュ織</div>
+                <div className="text-sm text-gray-400 text-center py-4">暂无日志</div>
               ) : (
                 <div className="space-y-1">
                   {logs.map(log => (
@@ -1705,7 +1723,7 @@ export default function Analyze() {
 
           <div className="mb-8 shrink-0">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">妯″潡鍒掑垎</h2>
+              <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">模块划分</h2>
               <div className="flex items-center gap-3">
                 <button
                   type="button"
@@ -1713,7 +1731,7 @@ export default function Analyze() {
                   disabled={!canRunModuleAnalysis || loadingModules}
                   className="text-xs font-medium text-indigo-600 hover:text-indigo-700 disabled:text-gray-300"
                 >
-                  {loadingModules ? '鍒嗘瀽涓?..' : '閲嶆柊鍒嗘瀽'}
+                  {loadingModules ? '分析中...' : '重新分析'}
                 </button>
                 {selectedModuleId ? (
                   <button
@@ -1721,7 +1739,8 @@ export default function Analyze() {
                     onClick={() => setSelectedModuleId(null)}
                     className="text-xs font-medium text-indigo-600 hover:text-indigo-700"
                   >
-                    娓呴櫎绛涢€?                  </button>
+                    清除筛选
+                  </button>
                 ) : null}
               </div>
             </div>
@@ -1729,7 +1748,7 @@ export default function Analyze() {
             {loadingModules ? (
               <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm flex items-center justify-center gap-2 text-sm text-gray-400">
                 <Loader2 className="w-4 h-4 animate-spin text-indigo-500" />
-                姝ｅ湪鐢熸垚妯″潡鍒掑垎...
+                正在生成模块划分...
               </div>
             ) : moduleAnalysis?.modules.length ? (
               <div className="space-y-3">
@@ -1743,9 +1762,10 @@ export default function Analyze() {
                       : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300',
                   )}
                 >
-                  <div className="text-sm font-semibold">鍏ㄩ儴妯″潡</div>
+                  <div className="text-sm font-semibold">全部模块</div>
                   <div className={clsx('mt-1 text-xs', selectedModuleId === null ? 'text-gray-200' : 'text-gray-500')}>
-                    鏄剧ず鍏ㄩ儴鍑芥暟鑺傜偣锛屼笉鍋氭ā鍧楃瓫閫夈€?                  </div>
+                    显示全部函数节点，不做模块筛选。
+                  </div>
                 </button>
 
                 <div className="space-y-2">
@@ -1772,7 +1792,8 @@ export default function Analyze() {
                             <span className="truncate text-sm font-semibold">{module.name}</span>
                           </div>
                           <span className={clsx('shrink-0 text-xs font-medium', selected ? 'text-gray-200' : 'text-gray-400')}>
-                            {module.functions.length} 涓嚱鏁?                          </span>
+                            {module.functions.length} 个函数
+                          </span>
                         </div>
                         <div className={clsx('mt-2 text-xs leading-relaxed', selected ? 'text-gray-200' : 'text-gray-500')}>
                           {module.description}
@@ -1790,31 +1811,31 @@ export default function Analyze() {
           </div>
 
           <div className="flex-1 shrink-0">
-            <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">鎶€鏈爤鍒嗘瀽</h2>
+            <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-4">技术栈分析</h2>
             
             {aiResult ? (
               <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm space-y-6">
                 <div>
-                  <h3 className="text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">涓昏缂栫▼璇█</h3>
+                  <h3 className="text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">主要编程语言</h3>
                   <div className="inline-flex items-center px-3 py-1 rounded-md bg-indigo-50 text-indigo-700 text-sm font-semibold">
                     {aiResult.mainLanguage}
                   </div>
                 </div>
 
                 <div>
-                  <h3 className="text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">鎶€鏈爤</h3>
+                  <h3 className="text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">技术栈</h3>
                   <div className="flex flex-wrap gap-2">
                     {aiResult.techStack.map((tech, i) => (
                       <span key={i} className="px-2.5 py-1 bg-gray-50 text-gray-700 rounded-md text-xs font-medium border border-gray-200">
                         {tech}
                       </span>
                     ))}
-                    {aiResult.techStack.length === 0 && <span className="text-sm text-gray-400">鏈瘑鍒埌鏄庢樉鎶€鏈爤</span>}
+                    {aiResult.techStack.length === 0 && <span className="text-sm text-gray-400">未识别到明显技术栈</span>}
                   </div>
                 </div>
 
                 <div>
-                  <h3 className="text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">鍙兘鐨勪富鍏ュ彛鏂囦欢</h3>
+                  <h3 className="text-xs font-medium text-gray-400 mb-2 uppercase tracking-wider">可能的主入口文件</h3>
                   {aiResult.verifiedEntryFile && aiResult.verifiedEntryReason ? (
                     <div className="mb-3 rounded-lg border border-emerald-200 bg-emerald-50/70 p-3">
                       <div className="text-xs font-semibold text-emerald-700">已确认入口文件</div>
@@ -1826,10 +1847,12 @@ export default function Analyze() {
                     </div>
                   ) : verifyEntryStepStatus === 'running' ? (
                     <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50/70 p-3 text-xs leading-relaxed text-blue-700">
-                      姝ｅ湪楠岃瘉鍏ュ彛鏂囦欢锛岀‘璁ゅ悗浼氬湪杩欓噷鏍囪鏈€缁堝叆鍙ｅ苟鏄剧ず鐮斿垽鐞嗙敱銆?                    </div>
+                      正在验证入口文件，确认后会在这里标记最终入口并显示研判理由。
+                    </div>
                   ) : verifyEntryStepStatus === 'failed' ? (
                     <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-xs leading-relaxed text-amber-700">
-                      鏆傛湭纭鏈€缁堝叆鍙ｆ枃浠讹紝璇风粨鍚堝€欓€夊叆鍙ｅ拰鏃ュ織缁х画鏌ョ湅鍒嗘瀽杩囩▼銆?                    </div>
+                      暂未确认最终入口文件，请结合候选入口和日志继续查看分析过程。
+                    </div>
                   ) : null}
                   <div className="space-y-2">
                     {candidateEntryFiles.map((file, i) => (
@@ -1838,18 +1861,18 @@ export default function Analyze() {
                         {aiResult.verifiedEntryFile === file && <span className="ml-2 text-[10px] uppercase tracking-wider bg-emerald-100 px-1.5 py-0.5 rounded text-emerald-600">已确认</span>}
                       </div>
                     ))}
-                    {candidateEntryFiles.length === 0 && <span className="text-sm text-gray-400">鏈瘑鍒埌鍏ュ彛鏂囦欢</span>}
+                    {candidateEntryFiles.length === 0 && <span className="text-sm text-gray-400">未识别到入口文件</span>}
                   </div>
                 </div>
               </div>
             ) : loadingAi ? (
               <div className="bg-white rounded-xl p-6 border border-gray-100 shadow-sm flex flex-col items-center justify-center text-gray-400 space-y-3">
                 <Loader2 className="w-6 h-6 animate-spin text-indigo-500" />
-                <span className="text-sm">AI 姝ｅ湪鍒嗘瀽...</span>
+                <span className="text-sm">AI 正在分析...</span>
               </div>
             ) : (
               <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm h-32 flex items-center justify-center text-gray-400 text-sm">
-                绛夊緟鍒嗘瀽...
+                等待分析...
               </div>
             )}
             </div>
@@ -1863,7 +1886,7 @@ export default function Analyze() {
           <>
             <Panel defaultSize={25} minSize={10} className="bg-white flex flex-col">
               <div className="p-4 border-b border-gray-100 bg-gray-50/50 shrink-0">
-                <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">鏂囦欢缁撴瀯</h2>
+                <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">文件结构</h2>
               </div>
           <div className="flex-1 overflow-y-auto p-3">
             {loadingTree ? (
@@ -1910,7 +1933,7 @@ export default function Analyze() {
                 <div className="w-16 h-16 bg-white rounded-2xl border border-gray-100 shadow-sm flex items-center justify-center mx-auto mb-4">
                   <Github className="w-8 h-8 text-gray-300" />
                 </div>
-                <p className="text-sm">鍦ㄥ乏渚ч€夋嫨涓€涓枃浠朵互鏌ョ湅浠ｇ爜</p>
+                <p className="text-sm">在左侧选择一个文件以查看代码</p>
               </div>
             </div>
           )}
@@ -1926,13 +1949,14 @@ export default function Analyze() {
               <span className="text-sm font-semibold text-gray-600 truncate">函数调用全景图</span>
               {loadingSubFunctions && <Loader2 className="w-4 h-4 ml-2 animate-spin text-indigo-500" />}
             </div>
-            <div ref={panoramaPanelRef} className="flex-1 overflow-hidden relative">
+            <div className="flex-1 overflow-hidden relative">
               <Panorama
                 data={subFunctionResult}
                 entryFile={aiResult?.verifiedEntryFile || ''}
                 moduleMap={moduleMap}
                 selectedModuleId={selectedModuleId}
                 drillingNodeId={manualDrillNodeId || (loadingSubFunctions ? '__loading__' : null)}
+                viewportRef={panoramaViewportRef}
                 onNodeSelect={handlePanoramaNodeSelect}
                 onNodeDrillDown={handlePanoramaNodeDrillDown}
               />
@@ -1948,7 +1972,7 @@ export default function Analyze() {
             <div className="flex items-center justify-between p-5 border-b border-gray-100 bg-gray-50/80">
               <h2 className="text-lg font-semibold text-gray-800 flex items-center">
                 <Activity className="w-5 h-5 mr-2 text-indigo-500" />
-                瀹屾暣 AGENT 鏃ュ織
+                完整 AGENT 日志
               </h2>
               <button 
                 onClick={() => setIsLogModalOpen(false)} 
@@ -1965,15 +1989,15 @@ export default function Analyze() {
                     {renderWorkflowStatusCard()}
                   </div>
                   <div>
-                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">AI 璋冪敤缁熻</h3>
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">AI 调用统计</h3>
                     {renderAiStatsCard()}
                   </div>
                 </div>
 
                 <div>
-                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">璋冪敤杩囩▼鏃ュ織</h3>
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">调用过程日志</h3>
                   {logs.length === 0 ? (
-                    <div className="text-center text-gray-400 py-10 bg-white rounded-xl border border-gray-100 shadow-sm">鏆傛棤鏃ュ織</div>
+                    <div className="text-center text-gray-400 py-10 bg-white rounded-xl border border-gray-100 shadow-sm">暂无日志</div>
                   ) : (
                     <div className="space-y-2">
                       {logs.map((log) => (
@@ -1997,7 +2021,7 @@ export default function Analyze() {
               <div className="min-w-0">
                 <h2 className="text-lg font-semibold text-gray-800 flex items-center">
                   <FileText className="w-5 h-5 mr-2 text-indigo-500" />
-                  椤圭洰宸ョ▼鏂囦欢
+                  项目工程文件
                 </h2>
                 <div className="mt-1 text-xs font-mono text-gray-400 truncate">{projectRecord.markdownPath}</div>
               </div>
@@ -2008,7 +2032,7 @@ export default function Analyze() {
                   className="inline-flex items-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 hover:border-gray-300 hover:bg-gray-50"
                 >
                   <Copy className="w-4 h-4 mr-2" />
-                  澶嶅埗
+                  复制
                 </button>
                 <button
                   onClick={() => setIsProjectFileOpen(false)}
