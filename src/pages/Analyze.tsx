@@ -128,6 +128,7 @@ export default function Analyze() {
   });
   const logsEndRef = useRef<HTMLDivElement>(null);
   const panoramaViewportRef = useRef<HTMLDivElement>(null);
+  const panoramaLayoutRef = useRef<HTMLDivElement>(null);
   const workflowStepsRef = useRef<WorkflowStepSnapshot[]>(createInitialWorkflowSteps());
   const analyzedUrlRef = useRef<string | null>(null);
   const analyzedAtRef = useRef<string | null>(null);
@@ -433,6 +434,13 @@ export default function Analyze() {
 
     const loc = await locateFunctionInProject(sub.name, fallbackParentFilePath, suggestedFiles, files, fetchContent);
     if (!loc.found || !loc.resolvedFile) {
+      addLog('下钻定位失败', `[${sub.name}] 未找到函数定义。`, {
+        functionName: sub.name,
+        parentFilePath: fallbackParentFilePath || '(empty)',
+        nodeFile: sub.file || '(empty)',
+        suggestedFiles: suggestedFiles.slice(0, 20),
+        locate: loc.debug,
+      });
       return {
         resolvedFile: isUsableProjectFilePath(sub.file) ? sub.file : undefined,
         stopReason: 'not_found',
@@ -547,7 +555,14 @@ export default function Analyze() {
       fetchContent
     );
     if (!loc.found || !loc.resolvedFile) {
-      addLog('下钻停止', `[${sub.name}] 未找到函数定义，停止下钻`);
+      addLog('下钻停止', `[${sub.name}] 未找到函数定义，停止下钻`, {
+        functionName: sub.name,
+        depth,
+        parentFilePath: parentFilePath || '(empty)',
+        nodeFile: sub.file || '(empty)',
+        suggestedFiles: suggestedFiles.slice(0, 20),
+        locate: loc.debug,
+      });
       return { ...sub, stopReason: 'not_found' };
     }
     if (looksLikeSystemOrLibrary(sub.name, loc.resolvedFile)) {
@@ -1136,35 +1151,53 @@ export default function Analyze() {
   };
 
   const handlePanoramaNodeSelect = async (node: PanoramaNodeRef) => {
-    if (!repoInfo || !dataSourceRef.current || !isUsableProjectFilePath(node.file)) {
+    if (!repoInfo || !dataSourceRef.current) {
       return;
     }
 
-    if (node.startLine) {
-      await loadFileAtLocation(node.file, {
+    const nodeFile = isUsableProjectFilePath(node.file) ? node.file : '';
+    const fallbackParentFilePath =
+      nodeFile ||
+      (selectedFile && isUsableProjectFilePath(selectedFile.path) ? selectedFile.path : '') ||
+      (aiResult?.verifiedEntryFile && isUsableProjectFilePath(aiResult.verifiedEntryFile) ? aiResult.verifiedEntryFile : '') ||
+      (aiResult?.entryFiles?.[0] && isUsableProjectFilePath(aiResult.entryFiles[0]) ? aiResult.entryFiles[0] : '');
+
+    if (nodeFile && node.startLine) {
+      await loadFileAtLocation(nodeFile, {
         startLine: node.startLine,
         endLine: node.endLine || node.startLine,
       });
       return;
     }
 
-    try {
-      const content = await readDataSourceFile(node.file);
-      const located = locateInFile(content, node.name, node.file);
-      if (located.found) {
-        await loadFileAtLocation(node.file, {
-          startLine: located.startLine,
-          endLine: located.endLine,
-        });
-        return;
+    if (nodeFile) {
+      try {
+        const content = await readDataSourceFile(nodeFile);
+        const locatedInCurrentFile = locateInFile(content, node.name, nodeFile);
+        if (locatedInCurrentFile.found) {
+          await loadFileAtLocation(nodeFile, {
+            startLine: locatedInCurrentFile.startLine,
+            endLine: locatedInCurrentFile.endLine,
+          });
+          return;
+        }
+      } catch {
+        addLog('代码定位', `[${node.name}] 直接在文件中定位失败，改用项目级搜索。`);
       }
-    } catch {
-      addLog('代码定位', `[${node.name}] 直接在文件中定位失败，改用项目级搜索。`);
     }
 
     const files = extractCodeFiles(tree);
     const fetchContent = (filePath: string) => readDataSourceFile(filePath);
-    const located = await locateFunctionInProject(node.name, node.file, [node.file], files, fetchContent);
+    const suggestedFiles = Array.from(
+      new Set([nodeFile, fallbackParentFilePath].filter((item): item is string => isUsableProjectFilePath(item))),
+    );
+    const located = await locateFunctionInProject(
+      node.name,
+      fallbackParentFilePath,
+      suggestedFiles,
+      files,
+      fetchContent,
+    );
 
     if (located.found && located.resolvedFile) {
       await loadFileAtLocation(located.resolvedFile, {
@@ -1174,7 +1207,15 @@ export default function Analyze() {
       return;
     }
 
-    await loadFileAtLocation(node.file);
+    addLog('代码定位失败', `[${node.name}] 项目级搜索未命中函数定义。`, {
+      nodeFile: node.file || '(empty)',
+      fallbackParentFilePath: fallbackParentFilePath || '(empty)',
+      locate: located.debug,
+    });
+
+    if (nodeFile) {
+      await loadFileAtLocation(nodeFile);
+    }
   };
 
   const handlePanoramaNodeDrillDown = async (node: PanoramaDrillTarget) => {
@@ -1334,37 +1375,42 @@ export default function Analyze() {
   };
 
   const handleDownloadPanoramaImage = async () => {
-    if (!panoramaViewportRef.current) {
-      addLog('全景图下载失败', '当前未找到全景图视口，请先展开全景图再尝试下载。');
+    if (!panoramaLayoutRef.current) {
+      addLog('全景图下载失败', '当前未找到全景图布局，请先完成调用图分析后重试。');
       return;
     }
 
-    const viewportWidth = panoramaViewportRef.current.clientWidth;
-    const viewportHeight = panoramaViewportRef.current.clientHeight;
-    if (!viewportWidth || !viewportHeight) {
-      addLog('全景图下载失败', '当前全景图视口尺寸异常，请调整布局后重试。');
+    const layoutWidth = Math.ceil(panoramaLayoutRef.current.scrollWidth || panoramaLayoutRef.current.clientWidth);
+    const layoutHeight = Math.ceil(panoramaLayoutRef.current.scrollHeight || panoramaLayoutRef.current.clientHeight);
+    if (!layoutWidth || !layoutHeight) {
+      addLog('全景图下载失败', '当前全景图布局尺寸异常，请调整布局后重试。');
       return;
     }
 
     try {
-      const dataUrl = await toPng(panoramaViewportRef.current, {
+      const maxDimension = Math.max(layoutWidth, layoutHeight);
+      const pixelRatio = Math.max(0.75, Math.min(2, 8192 / maxDimension));
+      const dataUrl = await toPng(panoramaLayoutRef.current, {
         cacheBust: true,
-        pixelRatio: 2,
+        pixelRatio,
         backgroundColor: '#ffffff',
-        width: viewportWidth,
-        height: viewportHeight,
-        canvasWidth: viewportWidth * 2,
-        canvasHeight: viewportHeight * 2,
+        width: layoutWidth,
+        height: layoutHeight,
+        canvasWidth: Math.round(layoutWidth * pixelRatio),
+        canvasHeight: Math.round(layoutHeight * pixelRatio),
+        filter: (domNode) =>
+          !(domNode instanceof HTMLElement && domNode.dataset.panoramaExportIgnore === 'true'),
         style: {
-          width: `${viewportWidth}px`,
-          height: `${viewportHeight}px`,
-          overflow: 'hidden',
+          width: `${layoutWidth}px`,
+          height: `${layoutHeight}px`,
+          overflow: 'visible',
         },
       });
       const response = await fetch(dataUrl);
       const blob = await response.blob();
       const baseName = sanitizeFilename(projectRecord?.projectName || sourceDescriptor?.label || 'project');
       triggerFileDownload(`${baseName}-panorama.png`, blob);
+      addLog('全景图下载', `已导出全景图（全量布局 ${layoutWidth} x ${layoutHeight}）。`);
     } catch (err: any) {
       addLog('全景图下载失败', `导出全景图图片失败：${err.message || '未知错误'}`);
     }
@@ -1957,6 +2003,7 @@ export default function Analyze() {
                 selectedModuleId={selectedModuleId}
                 drillingNodeId={manualDrillNodeId || (loadingSubFunctions ? '__loading__' : null)}
                 viewportRef={panoramaViewportRef}
+                layoutRef={panoramaLayoutRef}
                 onNodeSelect={handlePanoramaNodeSelect}
                 onNodeDrillDown={handlePanoramaNodeDrillDown}
               />

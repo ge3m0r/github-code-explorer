@@ -24,6 +24,7 @@ interface PanoramaProps {
   selectedModuleId: string | null;
   drillingNodeId?: string | null;
   viewportRef?: RefObject<HTMLDivElement>;
+  layoutRef?: RefObject<HTMLDivElement>;
   onNodeSelect?: (node: PanoramaNodeRef) => void;
   onNodeDrillDown?: (node: PanoramaDrillTarget) => void;
 }
@@ -243,6 +244,7 @@ export default function Panorama({
   selectedModuleId,
   drillingNodeId = null,
   viewportRef,
+  layoutRef,
   onNodeSelect,
   onNodeDrillDown,
 }: PanoramaProps) {
@@ -410,7 +412,12 @@ export default function Panorama({
       <div ref={viewportRef} className="flex-1 min-h-0 overflow-hidden">
         <TransformWrapper initialScale={1} minScale={0.1} maxScale={4} centerOnInit={false} wheel={{ step: 0.1 }}>
           <TransformComponent wrapperStyle={{ width: '100%', height: '100%' }}>
-            <div className="relative" style={{ width: layout.layoutWidth, height: layout.layoutHeight }}>
+            <div
+              ref={layoutRef}
+              data-panorama-layout="true"
+              className="relative"
+              style={{ width: layout.layoutWidth, height: layout.layoutHeight }}
+            >
               <svg className="absolute top-0 left-0 w-full h-full pointer-events-none">
                 {layout.edges.map((edge) => {
                   const fromNode = layoutNodeMap.get(edge.from);
@@ -469,7 +476,7 @@ export default function Panorama({
                         opacity: dimmed ? 0.3 : 1,
                         filter: dimmed ? 'grayscale(1)' : 'none',
                       }}
-                      onClick={() => node.file && onNodeSelect?.(node)}
+                      onClick={() => onNodeSelect?.(node)}
                       title={node.file ? `点击打开 ${node.file}${node.startLine ? `:${node.startLine}` : ''}` : node.name}
                     >
                       <div
@@ -487,6 +494,7 @@ export default function Panorama({
                           <span className="shrink-0 ml-2 flex items-center gap-1">
                             {node.drillDown !== undefined && (
                               <span
+                                data-panorama-export-ignore="true"
                                 className={`w-2 h-2 rounded-full ${
                                   node.stopReason === 'not_found'
                                     ? 'bg-yellow-300'
@@ -583,6 +591,7 @@ export default function Panorama({
 
                       <button
                         type="button"
+                        data-panorama-export-ignore="true"
                         className="absolute right-2 bottom-2 h-5 w-5 rounded-md border border-gray-300 bg-white/95 text-[10px] text-gray-400 opacity-80 shadow-sm transition-opacity group-hover:opacity-100"
                         onPointerDown={handleResizeStart}
                         onClick={(event) => event.stopPropagation()}
@@ -595,6 +604,7 @@ export default function Panorama({
                     {node.hasLoadedChildren ? (
                       <button
                         type="button"
+                        data-panorama-export-ignore="true"
                         className="absolute z-10 h-9 w-9 rounded-full border border-gray-300 bg-white text-sm font-semibold text-gray-600 shadow-md transition-colors hover:border-indigo-300 hover:text-indigo-600"
                         style={{ left: '50%', top: cardSize.height, transform: 'translate(-50%, -50%)' }}
                         onClick={(event) => {
@@ -608,6 +618,7 @@ export default function Panorama({
                     ) : showDrillButton ? (
                       <button
                         type="button"
+                        data-panorama-export-ignore="true"
                         className="absolute z-10 min-w-[72px] rounded-full border border-blue-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-blue-600 shadow-md transition-colors hover:border-blue-300 hover:bg-blue-50 disabled:cursor-not-allowed disabled:border-gray-200 disabled:text-gray-300"
                         style={{ left: '50%', top: cardSize.height, transform: 'translate(-50%, -50%)' }}
                         onClick={(event) => {

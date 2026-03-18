@@ -6,6 +6,16 @@ export interface LocateResult {
   resolvedFile?: string;
 }
 
+export interface LocateDebugInfo {
+  requestedFunctionName: string;
+  parentFilePath: string;
+  suggestedFiles: string[];
+  allCodeFileCount: number;
+  attemptedFileCount: number;
+  attemptedFilesSample: string[];
+  stage?: 'parent' | 'suggested' | 'full_scan';
+}
+
 export type FetchContentFn = (filePath: string) => Promise<string>;
 
 interface QualifiedFunctionName {
@@ -235,8 +245,19 @@ export async function locateFunctionInProject(
   suggestedFiles: string[],
   allCodeFiles: string[],
   fetchContent: FetchContentFn,
-): Promise<LocateResult & { resolvedFile?: string }> {
+): Promise<LocateResult & { resolvedFile?: string; debug: LocateDebugInfo }> {
   const tried = new Set<string>();
+  const normalizedSuggestedFiles = suggestedFiles.map((item) => item.trim()).filter(Boolean);
+  const attemptedFiles: string[] = [];
+  const buildDebug = (stage?: LocateDebugInfo['stage']): LocateDebugInfo => ({
+    requestedFunctionName: functionName,
+    parentFilePath,
+    suggestedFiles: normalizedSuggestedFiles.slice(0, 50),
+    allCodeFileCount: allCodeFiles.length,
+    attemptedFileCount: attemptedFiles.length,
+    attemptedFilesSample: attemptedFiles.slice(0, 60),
+    stage,
+  });
 
   const tryFile = async (filePath: string): Promise<(LocateResult & { resolvedFile?: string }) | null> => {
     if (!filePath || tried.has(filePath)) {
@@ -244,6 +265,7 @@ export async function locateFunctionInProject(
     }
 
     tried.add(filePath);
+    attemptedFiles.push(filePath);
 
     try {
       const content = await fetchContent(filePath);
@@ -260,20 +282,29 @@ export async function locateFunctionInProject(
 
   const inParent = await tryFile(parentFilePath);
   if (inParent) {
-    return inParent;
+    return {
+      ...inParent,
+      debug: buildDebug('parent'),
+    };
   }
 
-  for (const filePath of suggestedFiles.map((item) => item.trim()).filter(Boolean)) {
+  for (const filePath of normalizedSuggestedFiles) {
     const located = await tryFile(filePath);
     if (located) {
-      return located;
+      return {
+        ...located,
+        debug: buildDebug('suggested'),
+      };
     }
   }
 
   for (const filePath of allCodeFiles) {
     const located = await tryFile(filePath);
     if (located) {
-      return located;
+      return {
+        ...located,
+        debug: buildDebug('full_scan'),
+      };
     }
   }
 
@@ -282,5 +313,6 @@ export async function locateFunctionInProject(
     startLine: 0,
     endLine: 0,
     snippet: '',
+    debug: buildDebug(),
   };
 }
